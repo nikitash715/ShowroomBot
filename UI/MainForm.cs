@@ -13,6 +13,7 @@ public sealed class MainForm : Form
     private readonly VpnDetector _vpnDetector;
     private readonly RdpAvailabilityChecker _rdpAvailabilityChecker;
     private readonly RdpController _rdpController;
+    private readonly RdpTestScenario _rdpTestScenario;
     private readonly DemoController _demoController;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly NotifyIcon _notifyIcon;
@@ -36,6 +37,7 @@ public sealed class MainForm : Form
     private bool _isCheckingInfrastructure;
     private DateTime _lastInfrastructureCheckUtc = DateTime.MinValue;
     private bool _isExiting;
+    private bool _isTestScenarioRunning;
 
     public MainForm(
         SettingsService settingsService,
@@ -44,6 +46,7 @@ public sealed class MainForm : Form
         VpnDetector vpnDetector,
         RdpAvailabilityChecker rdpAvailabilityChecker,
         RdpController rdpController,
+        RdpTestScenario rdpTestScenario,
         DemoController demoController)
     {
         _settingsService = settingsService;
@@ -52,6 +55,7 @@ public sealed class MainForm : Form
         _vpnDetector = vpnDetector;
         _rdpAvailabilityChecker = rdpAvailabilityChecker;
         _rdpController = rdpController;
+        _rdpTestScenario = rdpTestScenario;
         _demoController = demoController;
 
         Text = "ShowroomBot";
@@ -84,7 +88,7 @@ public sealed class MainForm : Form
 
         Controls.Add(BuildLayout());
 
-        _startMenuItem = new ToolStripMenuItem("Запустить демонстрацию", null, (_, _) => StartDemo(false));
+        _startMenuItem = new ToolStripMenuItem("Запустить демонстрацию", null, async (_, _) => await StartDemoAsync(false));
         _stopMenuItem = new ToolStripMenuItem("Остановить демонстрацию", null, (_, _) => StopDemo());
         _openRdpMenuItem = new ToolStripMenuItem("Открыть RDP", null, (_, _) => OpenRdp());
         var openMenuItem = new ToolStripMenuItem("Открыть", null, (_, _) => ShowMainWindow());
@@ -108,7 +112,7 @@ public sealed class MainForm : Form
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += async (_, _) => await RefreshAsync();
 
-        _startButton.Click += (_, _) => StartDemo(false);
+        _startButton.Click += async (_, _) => await StartDemoAsync(false);
         _stopButton.Click += (_, _) => StopDemo();
         _openRdpButton.Click += (_, _) => OpenRdp();
         _autoStartCheckBox.CheckedChanged += (_, _) =>
@@ -246,7 +250,7 @@ public sealed class MainForm : Form
             idleTime >= threshold &&
             IsReadyForRdp())
         {
-            StartDemo(true);
+            await StartDemoAsync(true);
         }
         else if (_demoController.State == AppState.DemoRunning &&
                  _demoController.WasStartedAutomatically &&
@@ -288,13 +292,50 @@ public sealed class MainForm : Form
         return TimeSpan.FromSeconds(Math.Max(1, seconds));
     }
 
-    private void StartDemo(bool automatic)
+    private async Task StartDemoAsync(bool automatic)
     {
         _demoController.StartDemo(automatic);
 
-        if (IsReadyForRdp())
+        if (automatic)
         {
-            OpenRdp();
+            if (IsReadyForRdp())
+            {
+                OpenRdp();
+            }
+
+            return;
+        }
+
+        if (_isTestScenarioRunning)
+        {
+            return;
+        }
+
+        _isTestScenarioRunning = true;
+        UpdateView();
+        try
+        {
+            var screenshotPath = await _rdpTestScenario.RunAsync();
+            _notifyIcon.ShowBalloonTip(
+                4000,
+                "ShowroomBot",
+                $"Тест завершён. Снимок сохранён: {screenshotPath}",
+                ToolTipIcon.Info);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Ошибка теста RDP",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            _demoController.StopDemo();
+        }
+        finally
+        {
+            _isTestScenarioRunning = false;
+            UpdateView();
         }
     }
 
@@ -346,11 +387,11 @@ public sealed class MainForm : Form
 
         var isRunning = _demoController.State == AppState.DemoRunning;
         var canOpenRdp = IsReadyForRdp();
-        _startButton.Enabled = !isRunning;
-        _stopButton.Enabled = isRunning;
+        _startButton.Enabled = !isRunning && !_isTestScenarioRunning;
+        _stopButton.Enabled = isRunning && !_isTestScenarioRunning;
         _openRdpButton.Enabled = canOpenRdp;
-        _startMenuItem.Enabled = !isRunning;
-        _stopMenuItem.Enabled = isRunning;
+        _startMenuItem.Enabled = !isRunning && !_isTestScenarioRunning;
+        _stopMenuItem.Enabled = isRunning && !_isTestScenarioRunning;
         _openRdpMenuItem.Enabled = canOpenRdp;
 
         UpdateTrayTooltip();

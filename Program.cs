@@ -19,6 +19,9 @@ internal static class Program
         var vpnDetector = new VpnDetector();
         var rdpAvailabilityChecker = new RdpAvailabilityChecker();
         var rdpController = new RdpController();
+        var keyboardInputSender = new KeyboardInputSender();
+        var screenshotService = new WindowScreenshotService();
+        var rdpTestScenario = new RdpTestScenario(rdpController, keyboardInputSender, screenshotService);
         var demoController = new DemoController();
 
         using var mainForm = new MainForm(
@@ -28,6 +31,7 @@ internal static class Program
             vpnDetector,
             rdpAvailabilityChecker,
             rdpController,
+            rdpTestScenario,
             demoController);
         Application.Run(mainForm);
     }

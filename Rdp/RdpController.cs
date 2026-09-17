@@ -12,12 +12,8 @@ public sealed class RdpController
             return;
         }
 
-        var existingProcess = Process.GetProcessesByName("mstsc")
-            .FirstOrDefault(process => !process.HasExited);
-
-        if (existingProcess is not null)
+        if (TryActivateExistingWindow(out _))
         {
-            ActivateProcessWindow(existingProcess);
             return;
         }
 
@@ -29,14 +25,26 @@ public sealed class RdpController
         });
     }
 
-    private static void ActivateProcessWindow(Process process)
+    public bool TryActivateExistingWindow(out IntPtr windowHandle)
     {
-        if (process.MainWindowHandle == IntPtr.Zero)
+        windowHandle = IntPtr.Zero;
+
+        foreach (var process in Process.GetProcessesByName("mstsc"))
         {
-            return;
+            using (process)
+            {
+                process.Refresh();
+                if (process.HasExited || process.MainWindowHandle == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                windowHandle = process.MainWindowHandle;
+                NativeMethods.ShowWindow(windowHandle, NativeMethods.SW_RESTORE);
+                return NativeMethods.SetForegroundWindow(windowHandle);
+            }
         }
 
-        NativeMethods.ShowWindow(process.MainWindowHandle, NativeMethods.SW_RESTORE);
-        NativeMethods.SetForegroundWindow(process.MainWindowHandle);
+        return false;
     }
 }
