@@ -9,6 +9,15 @@ steps:
     typingDelayMs: 80
     afterActivationDelayMs: 1000
     afterRunDialogDelayMs: 500
-    afterLaunchDelayMs: 1000
-  - type: Open1CSection
+    reuseExistingWindow: true
+    panelColor: '#C0DCC0'
+    colorTolerance: 8
+    readyTimeoutSeconds: 60
+    pollIntervalMs: 500
+    windowSwitchDelayMs: 700
+    maxWindowsToCheck: 50
+  - type: Open1CCommand
     section: "Infostart Toolkit"
+    command: "Консоль запросов"
+    sectionOpenTimeoutSeconds: 5
+    commandTimeoutSeconds: 15

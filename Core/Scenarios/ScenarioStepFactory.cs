@@ -31,6 +31,12 @@ public sealed class ScenarioStepFactory
 
     public IScenarioStep Create(ScenarioStepDefinition definition)
     {
+        if (definition.Type.Equals("Open1CCommand", StringComparison.OrdinalIgnoreCase))
+        {
+            return new OpenOneCCommandStep(definition, _rdpController, _mouseInputSender,
+                _screenshots, _sectionRecognizer, _mouseSettings);
+        }
+
         if (definition.Type.Equals("Open1CSection", StringComparison.OrdinalIgnoreCase))
         {
             return new OpenOneCSectionStep(definition, _rdpController, _mouseInputSender,
@@ -39,7 +45,7 @@ public sealed class ScenarioStepFactory
 
         if (definition.Type.Equals("Open1C", StringComparison.OrdinalIgnoreCase))
         {
-            return new OpenOneCBaseStep(definition, _rdpController, _keyboardInputSender);
+            return new OpenOneCBaseStep(definition, _rdpController, _keyboardInputSender, _screenshots);
         }
 
         throw new InvalidOperationException($"Неизвестный тип шага сценария: '{definition.Type}'.");

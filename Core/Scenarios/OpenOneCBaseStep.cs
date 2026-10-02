@@ -1,4 +1,6 @@
 using System.Text;
+using System.Diagnostics;
+using System.Globalization;
 using ShowroomBot.Rdp;
 using ShowroomBot.Windows;
 
@@ -9,29 +11,51 @@ public sealed class OpenOneCBaseStep : IScenarioStep
     private readonly ScenarioStepDefinition _definition;
     private readonly RdpController _rdpController;
     private readonly KeyboardInputSender _keyboardInputSender;
+    private readonly WindowScreenshotService _screenshots;
 
     public OpenOneCBaseStep(
         ScenarioStepDefinition definition,
         RdpController rdpController,
-        KeyboardInputSender keyboardInputSender)
+        KeyboardInputSender keyboardInputSender,
+        WindowScreenshotService screenshots)
     {
         _definition = definition;
         _rdpController = rdpController;
         _keyboardInputSender = keyboardInputSender;
+        _screenshots = screenshots;
     }
 
     public string Name => "Открыть базу 1С";
 
     public async Task ExecuteAsync(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ValidateDefinition();
 
-        if (!_rdpController.TryActivateExistingWindow(out _))
+        if (!_rdpController.TryActivateExistingWindow(out var windowHandle))
         {
             throw new InvalidOperationException("Не найдено открытое окно mstsc или его не удалось активировать.");
         }
 
         await DelayAsync(_definition.AfterActivationDelayMs, cancellationToken);
+        var color = ParsePanelColor();
+        if (_definition.ReuseExistingWindow)
+        {
+            var searchTimer = Stopwatch.StartNew();
+            ScenarioExecution.Log("Начало поиска открытой базы 1С по цвету панели");
+            try
+            {
+                var found = await FindExistingAsync(windowHandle, color, cancellationToken);
+                ScenarioExecution.Log($"Поиск открытой базы: {(found ? "найдена" : "не найдена")}; затрачено {searchTimer.Elapsed.TotalSeconds:F3} с");
+                if (found) return;
+            }
+            catch
+            {
+                ScenarioExecution.Log($"Поиск открытой базы прерван; затрачено {searchTimer.Elapsed.TotalSeconds:F3} с");
+                throw;
+            }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
         _keyboardInputSender.SendWindowsRun();
         await DelayAsync(_definition.AfterRunDialogDelayMs, cancellationToken);
 
@@ -40,7 +64,62 @@ public sealed class OpenOneCBaseStep : IScenarioStep
             TimeSpan.FromMilliseconds(Math.Max(0, _definition.TypingDelayMs)),
             cancellationToken);
         _keyboardInputSender.SendEnter();
-        await DelayAsync(_definition.AfterLaunchDelayMs, cancellationToken);
+        var timer = Stopwatch.StartNew();
+        ScenarioExecution.Log("Начало ожидания интерфейса запущенной базы 1С");
+        var timeout = TimeSpan.FromSeconds(_definition.ReadyTimeoutSeconds);
+        while (timer.Elapsed < timeout)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var screenshot = Capture(windowHandle);
+            if (OneCBaseRecognizer.HasPanelColor(screenshot, color, _definition.ColorTolerance))
+            {
+                ScenarioExecution.Log($"Интерфейс базы найден; затрачено {timer.Elapsed.TotalSeconds:F3} с");
+                return;
+            }
+            var remaining = timeout - timer.Elapsed;
+            if (remaining > TimeSpan.Zero)
+                await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(_definition.PollIntervalMs, remaining.TotalMilliseconds)), cancellationToken);
+        }
+        ScenarioExecution.Log($"Таймаут ожидания базы; затрачено {timer.Elapsed.TotalSeconds:F3} с");
+        throw new TimeoutException($"Open1C: база '{_definition.Database}' с цветом {_definition.PanelColor} не появилась за {_definition.ReadyTimeoutSeconds} секунд.");
+    }
+
+    private Bitmap Capture(IntPtr handle)
+    {
+        var path = _screenshots.CaptureClientArea(handle, Path.Combine(Path.GetTempPath(), "ShowroomBot", "Open1C"));
+        try
+        {
+            using var image = new Bitmap(path);
+            return new Bitmap(image);
+        }
+        finally { File.Delete(path); }
+    }
+
+    private async Task<bool> FindExistingAsync(IntPtr handle, Color color, CancellationToken token)
+    {
+        using var initial = Capture(handle);
+        token.ThrowIfCancellationRequested();
+        if (OneCBaseRecognizer.HasPanelColor(initial, color, _definition.ColorTolerance)) return true;
+        for (var index = 1; index <= _definition.MaxWindowsToCheck; index++)
+        {
+            token.ThrowIfCancellationRequested();
+            // Selection moves a window to the MRU front; increasing the index visits the next one.
+            _keyboardInputSender.SelectRemoteWindow(index);
+            await DelayAsync(_definition.WindowSwitchDelayMs, token);
+            using var image = Capture(handle);
+            if (OneCBaseRecognizer.HasPanelColor(image, color, _definition.ColorTolerance)) return true;
+            if (OneCBaseRecognizer.SameWindow(initial, image)) return false;
+        }
+        throw new InvalidOperationException("Open1C: достигнут maxWindowsToCheck без подтверждения полного обхода окон RDP.");
+    }
+
+    private Color ParsePanelColor()
+    {
+        var value = _definition.PanelColor;
+        if (value is null || value.Length != 7 || value[0] != '#' ||
+            !int.TryParse(value.AsSpan(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb))
+            throw new InvalidOperationException("Open1C: panelColor должен иметь формат #RRGGBB.");
+        return Color.FromArgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
     }
 
     private string BuildCommand()
@@ -67,6 +146,11 @@ public sealed class OpenOneCBaseStep : IScenarioStep
 
     private void ValidateDefinition()
     {
+        if (_definition.ReadyTimeoutSeconds <= 0 || _definition.PollIntervalMs <= 0 ||
+            _definition.WindowSwitchDelayMs <= 0 || _definition.MaxWindowsToCheck <= 0 ||
+            _definition.ColorTolerance is < 0 or > 32)
+            throw new InvalidOperationException("Open1C: таймауты и лимит окон должны быть положительными; colorTolerance — 0..32.");
+        _ = ParsePanelColor();
         if (string.IsNullOrWhiteSpace(_definition.Executable))
         {
             throw new InvalidOperationException("В шаге Open1C не задан executable.");

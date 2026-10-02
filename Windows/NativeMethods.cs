@@ -32,6 +32,10 @@ public static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint SendInput(
         uint cInputs,

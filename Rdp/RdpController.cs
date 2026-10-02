@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using ShowroomBot.Windows;
+using ShowroomBot.Core.Scenarios;
 
 namespace ShowroomBot.Rdp;
 
@@ -17,16 +18,17 @@ public sealed class RdpController
             return;
         }
 
-        Process.Start(new ProcessStartInfo
+        ScenarioExecution.Perform(() => Process.Start(new ProcessStartInfo
         {
             FileName = "mstsc.exe",
             Arguments = $"/v:{host}",
             UseShellExecute = true
-        });
+        }));
     }
 
     public bool TryActivateExistingWindow(out IntPtr windowHandle)
     {
+        ScenarioExecution.CheckCancellation();
         windowHandle = IntPtr.Zero;
 
         foreach (var process in Process.GetProcessesByName("mstsc"))
@@ -40,8 +42,14 @@ public sealed class RdpController
                 }
 
                 windowHandle = process.MainWindowHandle;
-                NativeMethods.ShowWindow(windowHandle, NativeMethods.SW_RESTORE);
-                return NativeMethods.SetForegroundWindow(windowHandle);
+                var handle = windowHandle;
+                var activated = false;
+                ScenarioExecution.Perform(() =>
+                {
+                    NativeMethods.ShowWindowAsync(handle, NativeMethods.SW_RESTORE);
+                    activated = NativeMethods.SetForegroundWindow(handle);
+                });
+                return activated;
             }
         }
 

@@ -40,6 +40,8 @@ public sealed class MainForm : Form
     private DateTime _lastInfrastructureCheckUtc = DateTime.MinValue;
     private bool _isExiting;
     private bool _isTestScenarioRunning;
+    private CancellationTokenSource? _scenarioCancellation;
+    private EmergencyStopHotkey? _emergencyStop;
 
     public MainForm(
         SettingsService settingsService,
@@ -73,7 +75,7 @@ public sealed class MainForm : Form
         _vpnValueLabel = CreateValueLabel();
         _rdpValueLabel = CreateValueLabel();
         _startButton = new Button { Text = "Запустить демонстрацию", AutoSize = true };
-        _stopButton = new Button { Text = "Остановить демонстрацию", AutoSize = true };
+        _stopButton = new Button { Text = "Остановить (Ctrl+Alt+F12)", AutoSize = true };
         _openRdpButton = new Button { Text = "Открыть RDP", AutoSize = true };
         _autoStartCheckBox = new CheckBox
         {
@@ -155,13 +157,37 @@ public sealed class MainForm : Form
             return;
         }
 
+        StopDemo();
         base.OnFormClosing(e);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        _emergencyStop = new EmergencyStopHotkey(() =>
+        {
+            if (!IsDisposed && IsHandleCreated)
+            {
+                try { BeginInvoke(new Action(StopDemo)); }
+                catch (InvalidOperationException) { /* The form is closing. */ }
+            }
+        });
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        _emergencyStop?.Dispose();
+        _emergencyStop = null;
+        base.OnHandleDestroyed(e);
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            ScenarioExecution.CancelCurrent();
+            _scenarioCancellation?.Cancel();
+            _emergencyStop?.Dispose();
             _timer.Dispose();
             _notifyIcon.Dispose();
         }
@@ -310,15 +336,21 @@ public sealed class MainForm : Form
 
         _demoController.StartDemo(automatic: false);
         _isTestScenarioRunning = true;
+        using var cancellation = new CancellationTokenSource();
+        _scenarioCancellation = cancellation;
         UpdateView();
         try
         {
-            await _demoScenario.RunAsync(scenario.Definition);
+            await _demoScenario.RunAsync(scenario.Definition, cancellation.Token);
             _notifyIcon.ShowBalloonTip(
                 4000,
                 "ShowroomBot",
                 $"Сценарий завершён: {scenario.Name}",
                 ToolTipIcon.Info);
+        }
+        catch (OperationCanceledException)
+        {
+            _demoController.StopDemo();
         }
         catch (Exception exception)
         {
@@ -332,13 +364,17 @@ public sealed class MainForm : Form
         }
         finally
         {
+            _scenarioCancellation = null;
             _isTestScenarioRunning = false;
+            _demoController.StopDemo();
             UpdateView();
         }
     }
 
     private void StopDemo()
     {
+        ScenarioExecution.CancelCurrent();
+        _scenarioCancellation?.Cancel();
         _demoController.StopDemo();
     }
 
@@ -387,10 +423,10 @@ public sealed class MainForm : Form
         var canOpenRdp = IsReadyForRdp();
         var hasSelectedScenario = _scenarioComboBox.SelectedItem is ScenarioDescriptor;
         _startButton.Enabled = !isRunning && !_isTestScenarioRunning && hasSelectedScenario;
-        _stopButton.Enabled = isRunning && !_isTestScenarioRunning;
+        _stopButton.Enabled = isRunning || _isTestScenarioRunning;
         _openRdpButton.Enabled = canOpenRdp;
         _startMenuItem.Enabled = !isRunning && !_isTestScenarioRunning && hasSelectedScenario;
-        _stopMenuItem.Enabled = isRunning && !_isTestScenarioRunning;
+        _stopMenuItem.Enabled = isRunning || _isTestScenarioRunning;
         _openRdpMenuItem.Enabled = canOpenRdp;
 
         UpdateTrayTooltip();

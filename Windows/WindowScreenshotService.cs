@@ -5,6 +5,18 @@ namespace ShowroomBot.Windows;
 
 public sealed class WindowScreenshotService
 {
+    public string CaptureDesktop(string outputDirectory)
+    {
+        var bounds = SystemInformation.VirtualScreen;
+        Directory.CreateDirectory(outputDirectory);
+        var path = Path.Combine(outputDirectory, $"error-{DateTime.Now:yyyyMMdd-HHmmssfff}.png");
+        using var image = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(image))
+            graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+        image.Save(path, ImageFormat.Png);
+        return path;
+    }
+
     public Point ClientToScreen(IntPtr windowHandle, Point point)
     {
         var nativePoint = new NativeMethods.POINT { X = point.X, Y = point.Y };

@@ -22,15 +22,36 @@ public sealed class OneCSectionRecognizer
         string screenshotPath, string section, CancellationToken cancellationToken)
     {
         using var screenshot = new Bitmap(screenshotPath);
-        var panel = DetectPanel(screenshot);
+        var panel = DetectPanel(screenshot, cancellationToken);
+        return await RecognizeRegionAsync(screenshotPath, screenshot, panel, section, "panel", cancellationToken);
+    }
+
+    public async Task<(Rectangle Workspace, Rectangle? Command)> RecognizeCommandAsync(
+        string screenshotPath, string command, CancellationToken cancellationToken)
+    {
+        using var screenshot = new Bitmap(screenshotPath);
+        var panel = DetectPanel(screenshot, cancellationToken);
+        // Derive the working area from the detected navigation boundary, never from fixed coordinates.
+        var workspace = Rectangle.FromLTRB(panel.Right + 4, 0, screenshot.Width, screenshot.Height);
+        if (workspace.Width <= 0 || workspace.Height <= 0)
+            throw new InvalidOperationException("Не удалось определить рабочую область 1С.");
+        var action = await RecognizeRegionAsync(screenshotPath, screenshot, workspace, command, "workspace-command", cancellationToken);
+        return (workspace, action.TextBounds);
+    }
+
+    private static async Task<SectionRecognition> RecognizeRegionAsync(
+        string screenshotPath, Bitmap screenshot, Rectangle panel, string section, string suffix,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         using var crop = screenshot.Clone(panel, PixelFormat.Format32bppArgb);
-        var cropPath = Path.ChangeExtension(screenshotPath, ".panel.png");
+        var cropPath = Path.ChangeExtension(screenshotPath, $".{suffix}.png");
         crop.Save(cropPath, ImageFormat.Png);
 
-        var file = await StorageFile.GetFileFromPathAsync(Path.GetFullPath(cropPath));
-        using var stream = await file.OpenReadAsync();
-        var decoder = await BitmapDecoder.CreateAsync(stream);
-        using var bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+        var file = await StorageFile.GetFileFromPathAsync(Path.GetFullPath(cropPath)).AsTask(cancellationToken);
+        using var stream = await file.OpenReadAsync().AsTask(cancellationToken);
+        var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken);
+        using var bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied).AsTask(cancellationToken);
         if (bitmap.PixelWidth > OcrEngine.MaxImageDimension || bitmap.PixelHeight > OcrEngine.MaxImageDimension)
         {
             throw new InvalidOperationException("Размер панели превышает максимальный размер Windows OCR.");
@@ -52,9 +73,9 @@ public sealed class OneCSectionRecognizer
             cancellationToken.ThrowIfCancellationRequested();
             var engine = OcrEngine.TryCreateFromLanguage(language)
                 ?? throw new InvalidOperationException($"Недоступен OCR: {language.LanguageTag}.");
-            var result = await engine.RecognizeAsync(bitmap);
+            var result = await engine.RecognizeAsync(bitmap).AsTask(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            await File.WriteAllTextAsync(Path.ChangeExtension(screenshotPath, $".{language.LanguageTag}.txt"),
+            await File.WriteAllTextAsync(Path.ChangeExtension(screenshotPath, $".{suffix}.{language.LanguageTag}.txt"),
                 result.Text, cancellationToken);
             matches.AddRange(FindMatches(result, section, panel.Location));
         }
@@ -63,11 +84,11 @@ public sealed class OneCSectionRecognizer
         var distinct = new List<Rectangle>();
         foreach (var match in matches)
         {
-            if (!distinct.Any(existing => Rectangle.Intersect(existing, match).Height > 0))
+            if (!distinct.Any(existing => Rectangle.Intersect(existing, match) is var overlap && overlap.Height > 0 && overlap.Width > 0))
                 distinct.Add(match);
         }
         if (distinct.Count > 1)
-            throw new InvalidOperationException($"В панели найдено несколько разделов «{section}»; клик отменён.");
+            throw new InvalidOperationException($"В области {suffix} найдено несколько элементов «{section}»; клик отменён.");
         return new SectionRecognition(panel, distinct.Count == 1 ? distinct[0] : null);
     }
 
@@ -87,14 +108,34 @@ public sealed class OneCSectionRecognizer
                         break;
                     words.AddRange(next.Words);
                 }
-                if (Normalize(string.Join(" ", words.Select(word => word.Text))) != expected)
-                    continue;
-                var left = words.Min(word => word.BoundingRect.Left);
-                var top = words.Min(word => word.BoundingRect.Top);
-                var right = words.Max(word => word.BoundingRect.Right);
-                var bottom = words.Max(word => word.BoundingRect.Bottom);
-                yield return Rectangle.FromLTRB((int)Math.Floor(left) + offset.X, (int)Math.Floor(top) + offset.Y,
-                    (int)Math.Ceiling(right) + offset.X, (int)Math.Ceiling(bottom) + offset.Y);
+                // OCR may place several independent links on one line. Match the label's
+                // own consecutive words and return only their bounds.
+                for (var start = 0; start < words.Count; start++)
+                {
+                    var label = string.Empty;
+                    for (var end = start; end < words.Count; end++)
+                    {
+                        if (end > start)
+                        {
+                            var previous = words[end - 1].BoundingRect;
+                            var current = words[end].BoundingRect;
+                            var sameRow = current.Top < previous.Bottom && current.Bottom > previous.Top;
+                            if (sameRow && current.Left - previous.Right > Math.Max(previous.Height, current.Height) * 2)
+                                break;
+                        }
+                        label += Normalize(words[end].Text);
+                        if (!expected.StartsWith(label, StringComparison.Ordinal)) break;
+                        if (label != expected) continue;
+                        var matched = words.GetRange(start, end - start + 1);
+                        var left = matched.Min(word => word.BoundingRect.Left);
+                        var top = matched.Min(word => word.BoundingRect.Top);
+                        var right = matched.Max(word => word.BoundingRect.Right);
+                        var bottom = matched.Max(word => word.BoundingRect.Bottom);
+                        yield return Rectangle.FromLTRB((int)Math.Floor(left) + offset.X, (int)Math.Floor(top) + offset.Y,
+                            (int)Math.Ceiling(right) + offset.X, (int)Math.Ceiling(bottom) + offset.Y);
+                        break;
+                    }
+                }
             }
         }
     }
@@ -102,7 +143,7 @@ public sealed class OneCSectionRecognizer
     private static string Normalize(string text) =>
         string.Concat(text.Normalize(NormalizationForm.FormKC).Where(char.IsLetterOrDigit)).ToUpperInvariant();
 
-    public static Rectangle DetectPanel(Bitmap image)
+    public static Rectangle DetectPanel(Bitmap image, CancellationToken cancellationToken = default)
     {
         // Find a tall, narrow, solid-background region at the left of the current image.
         // Row votes tolerate text/icons; a colour transition determines the right edge.
@@ -111,6 +152,7 @@ public sealed class OneCSectionRecognizer
         var maxWidth = Math.Min(image.Width / 3, 500);
         for (var y = stride; y < image.Height - stride; y += stride)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             for (var seed = 4; seed < Math.Min(image.Width / 8, 80); seed += 12)
             {
                 var color = image.GetPixel(seed, y);
@@ -136,6 +178,7 @@ public sealed class OneCSectionRecognizer
         var candidates = new List<Rectangle>();
         foreach (var seed in votes)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var compatible = votes.Where(vote => Math.Abs(vote.Left - seed.Left) <= 12 &&
                 Math.Abs(vote.Right - seed.Right) <= 12 && Similar(vote.Color, seed.Color)).ToArray();
             if (compatible.Length < image.Height / stride * .35) continue;

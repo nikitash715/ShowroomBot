@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using ShowroomBot.Core.Scenarios;
 
 namespace ShowroomBot.Windows;
 
@@ -7,8 +8,11 @@ public sealed class MouseInputSender
 {
     public void ClickLeft()
     {
-        SendMouseInput(NativeMethods.MOUSEEVENTF_LEFTDOWN);
-        SendMouseInput(NativeMethods.MOUSEEVENTF_LEFTUP);
+        ScenarioExecution.Perform(() =>
+        {
+            SendMouseInputCore(NativeMethods.MOUSEEVENTF_LEFTDOWN, 0);
+            SendMouseInputCore(NativeMethods.MOUSEEVENTF_LEFTUP, 0);
+        });
     }
 
     public void Scroll(int notches)
@@ -17,6 +21,11 @@ public sealed class MouseInputSender
     }
 
     private static void SendMouseInput(uint flags, uint data = 0)
+    {
+        ScenarioExecution.Perform(() => SendMouseInputCore(flags, data));
+    }
+
+    private static void SendMouseInputCore(uint flags, uint data)
     {
         var input = new NativeMethods.INPUT
         {
@@ -66,6 +75,11 @@ public sealed class MouseInputSender
     }
 
     private static void SendAbsoluteMove(int screenX, int screenY)
+    {
+        ScenarioExecution.Perform(() => SendAbsoluteMoveCore(screenX, screenY));
+    }
+
+    private static void SendAbsoluteMoveCore(int screenX, int screenY)
     {
         var virtualLeft = NativeMethods.GetSystemMetrics(NativeMethods.SM_XVIRTUALSCREEN);
         var virtualTop = NativeMethods.GetSystemMetrics(NativeMethods.SM_YVIRTUALSCREEN);

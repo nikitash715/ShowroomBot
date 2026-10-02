@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using ShowroomBot.Core.Scenarios;
 
 namespace ShowroomBot.Windows;
 
@@ -23,6 +24,24 @@ public sealed class KeyboardInputSender
         SendInputs(
             CreateVirtualKeyInput(VirtualKeyEnter, keyUp: false),
             CreateVirtualKeyInput(VirtualKeyEnter, keyUp: true));
+    }
+
+    // RDP equivalent of Alt+Tab. Holding Alt avoids toggling the two MRU windows.
+    public void SelectRemoteWindow(int index)
+    {
+        const ushort alt = 0x12;
+        const ushort pageUp = 0x21;
+        SendInputs(CreateVirtualKeyInput(alt, false));
+        try
+        {
+            for (var i = 0; i < index; i++)
+                SendInputs(CreateVirtualKeyInput(pageUp, false), CreateVirtualKeyInput(pageUp, true));
+        }
+        finally
+        {
+            // Release our held modifier even when cancellation has blocked all further input.
+            SendInputsCore([CreateVirtualKeyInput(alt, true)]);
+        }
     }
 
     public void SendText(string text)
@@ -90,6 +109,11 @@ public sealed class KeyboardInputSender
     }
 
     private static void SendInputs(params NativeMethods.INPUT[] inputs)
+    {
+        ScenarioExecution.Perform(() => SendInputsCore(inputs));
+    }
+
+    private static void SendInputsCore(NativeMethods.INPUT[] inputs)
     {
         if (inputs.Length == 0)
         {
