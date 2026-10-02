@@ -1,5 +1,6 @@
 ﻿using ShowroomBot.Configuration;
 using ShowroomBot.Core;
+using ShowroomBot.Core.Scenarios;
 using ShowroomBot.Rdp;
 using ShowroomBot.UI;
 using ShowroomBot.Windows;
@@ -15,23 +16,45 @@ internal static class Program
 
         var settingsService = new SettingsService();
         var settings = settingsService.Load();
+        settings.AutoStartDemo = false;
+        settingsService.Save(settings);
+
+        IReadOnlyList<ScenarioDescriptor> scenarios;
+        try
+        {
+            scenarios = new ScenarioCatalog().Load();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                $"Не удалось загрузить сценарии: {exception.Message}",
+                "ShowroomBot",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            scenarios = [];
+        }
+
         var idleDetector = new IdleDetector();
         var vpnDetector = new VpnDetector();
         var rdpAvailabilityChecker = new RdpAvailabilityChecker();
         var rdpController = new RdpController();
         var keyboardInputSender = new KeyboardInputSender();
-        var screenshotService = new WindowScreenshotService();
-        var rdpTestScenario = new RdpTestScenario(rdpController, keyboardInputSender, screenshotService);
+        var scenarioStepFactory = new ScenarioStepFactory(rdpController, keyboardInputSender,
+            new MouseInputSender(), new WindowScreenshotService(), new OneCSectionRecognizer(),
+            settings.Automation.Mouse);
+        var scenarioRunner = new ScenarioRunner(scenarioStepFactory);
+        var demoScenario = new DemoScenario(scenarioRunner);
         var demoController = new DemoController();
 
         using var mainForm = new MainForm(
             settingsService,
             settings,
+            scenarios,
             idleDetector,
             vpnDetector,
             rdpAvailabilityChecker,
             rdpController,
-            rdpTestScenario,
+            demoScenario,
             demoController);
         Application.Run(mainForm);
     }

@@ -5,6 +5,16 @@ namespace ShowroomBot.Windows;
 
 public sealed class WindowScreenshotService
 {
+    public Point ClientToScreen(IntPtr windowHandle, Point point)
+    {
+        var nativePoint = new NativeMethods.POINT { X = point.X, Y = point.Y };
+        if (!NativeMethods.ClientToScreen(windowHandle, ref nativePoint))
+        {
+            throw new Win32Exception("Не удалось определить положение окна RDP на экране.");
+        }
+        return new Point(nativePoint.X, nativePoint.Y);
+    }
+
     public string CaptureClientArea(IntPtr windowHandle, string outputDirectory)
     {
         if (!NativeMethods.GetClientRect(windowHandle, out var clientRect))

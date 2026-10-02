@@ -1,5 +1,6 @@
 ﻿using ShowroomBot.Configuration;
 using ShowroomBot.Core;
+using ShowroomBot.Core.Scenarios;
 using ShowroomBot.Rdp;
 using ShowroomBot.Windows;
 
@@ -13,7 +14,7 @@ public sealed class MainForm : Form
     private readonly VpnDetector _vpnDetector;
     private readonly RdpAvailabilityChecker _rdpAvailabilityChecker;
     private readonly RdpController _rdpController;
-    private readonly RdpTestScenario _rdpTestScenario;
+    private readonly DemoScenario _demoScenario;
     private readonly DemoController _demoController;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly NotifyIcon _notifyIcon;
@@ -31,6 +32,7 @@ public sealed class MainForm : Form
     private readonly Button _openRdpButton;
     private readonly CheckBox _autoStartCheckBox;
     private readonly NumericUpDown _idleMinutesInput;
+    private readonly ComboBox _scenarioComboBox;
 
     private VpnStatus _vpnStatus = VpnStatus.Disconnected;
     private bool _isRdpAvailable;
@@ -42,11 +44,12 @@ public sealed class MainForm : Form
     public MainForm(
         SettingsService settingsService,
         AppSettings settings,
+        IReadOnlyList<ScenarioDescriptor> scenarios,
         IIdleDetector idleDetector,
         VpnDetector vpnDetector,
         RdpAvailabilityChecker rdpAvailabilityChecker,
         RdpController rdpController,
-        RdpTestScenario rdpTestScenario,
+        DemoScenario demoScenario,
         DemoController demoController)
     {
         _settingsService = settingsService;
@@ -55,7 +58,7 @@ public sealed class MainForm : Form
         _vpnDetector = vpnDetector;
         _rdpAvailabilityChecker = rdpAvailabilityChecker;
         _rdpController = rdpController;
-        _rdpTestScenario = rdpTestScenario;
+        _demoScenario = demoScenario;
         _demoController = demoController;
 
         Text = "ShowroomBot";
@@ -76,7 +79,8 @@ public sealed class MainForm : Form
         {
             Text = "Автоматически запускать при бездействии пользователя",
             AutoSize = true,
-            Checked = _settings.AutoStartDemo
+            Checked = false,
+            Enabled = false
         };
         _idleMinutesInput = new NumericUpDown
         {
@@ -85,10 +89,17 @@ public sealed class MainForm : Form
             Value = Math.Clamp(_settings.IdleMinutes, 1, 1440),
             Width = 80
         };
+        _scenarioComboBox = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 320,
+            DisplayMember = nameof(ScenarioDescriptor.Name),
+            DataSource = scenarios.ToList()
+        };
 
         Controls.Add(BuildLayout());
 
-        _startMenuItem = new ToolStripMenuItem("Запустить демонстрацию", null, async (_, _) => await StartDemoAsync(false));
+        _startMenuItem = new ToolStripMenuItem("Запустить демонстрацию", null, async (_, _) => await StartDemoAsync());
         _stopMenuItem = new ToolStripMenuItem("Остановить демонстрацию", null, (_, _) => StopDemo());
         _openRdpMenuItem = new ToolStripMenuItem("Открыть RDP", null, (_, _) => OpenRdp());
         var openMenuItem = new ToolStripMenuItem("Открыть", null, (_, _) => ShowMainWindow());
@@ -112,7 +123,7 @@ public sealed class MainForm : Form
         _timer = new System.Windows.Forms.Timer { Interval = 1000 };
         _timer.Tick += async (_, _) => await RefreshAsync();
 
-        _startButton.Click += async (_, _) => await StartDemoAsync(false);
+        _startButton.Click += async (_, _) => await StartDemoAsync();
         _stopButton.Click += (_, _) => StopDemo();
         _openRdpButton.Click += (_, _) => OpenRdp();
         _autoStartCheckBox.CheckedChanged += (_, _) =>
@@ -127,6 +138,7 @@ public sealed class MainForm : Form
             SaveSettings();
             UpdateView();
         };
+        _scenarioComboBox.SelectedIndexChanged += (_, _) => UpdateView();
         _demoController.StateChanged += (_, _) => UpdateView();
 
         UpdateView();
@@ -164,7 +176,7 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(18),
             ColumnCount = 2,
-            RowCount = 8
+            RowCount = 9
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -174,6 +186,7 @@ public sealed class MainForm : Form
         AddRow(panel, 2, "Порог запуска:", _thresholdValueLabel);
         AddRow(panel, 3, "VPN:", _vpnValueLabel);
         AddRow(panel, 4, "RDP:", _rdpValueLabel);
+        AddRow(panel, 5, "Сценарий:", _scenarioComboBox);
 
         var settingsPanel = new FlowLayoutPanel
         {
@@ -192,7 +205,7 @@ public sealed class MainForm : Form
         });
         settingsPanel.Controls.Add(_idleMinutesInput);
 
-        panel.Controls.Add(settingsPanel, 0, 5);
+        panel.Controls.Add(settingsPanel, 0, 6);
         panel.SetColumnSpan(settingsPanel, 2);
 
         var buttonPanel = new FlowLayoutPanel
@@ -206,7 +219,7 @@ public sealed class MainForm : Form
         buttonPanel.Controls.Add(_stopButton);
         buttonPanel.Controls.Add(_openRdpButton);
 
-        panel.Controls.Add(buttonPanel, 0, 6);
+        panel.Controls.Add(buttonPanel, 0, 7);
         panel.SetColumnSpan(buttonPanel, 2);
 
         return panel;
@@ -244,21 +257,6 @@ public sealed class MainForm : Form
             await RefreshInfrastructureStateAsync();
         }
 
-        var threshold = TimeSpan.FromMinutes(_settings.IdleMinutes);
-        if (_settings.AutoStartDemo &&
-            _demoController.State == AppState.Waiting &&
-            idleTime >= threshold &&
-            IsReadyForRdp())
-        {
-            await StartDemoAsync(true);
-        }
-        else if (_demoController.State == AppState.DemoRunning &&
-                 _demoController.WasStartedAutomatically &&
-                 idleTime < TimeSpan.FromSeconds(2))
-        {
-            StopDemo();
-        }
-
         UpdateView();
     }
 
@@ -292,17 +290,16 @@ public sealed class MainForm : Form
         return TimeSpan.FromSeconds(Math.Max(1, seconds));
     }
 
-    private async Task StartDemoAsync(bool automatic)
+    private async Task StartDemoAsync()
     {
-        _demoController.StartDemo(automatic);
-
-        if (automatic)
+        if (_scenarioComboBox.SelectedItem is not ScenarioDescriptor scenario)
         {
-            if (IsReadyForRdp())
-            {
-                OpenRdp();
-            }
-
+            MessageBox.Show(
+                this,
+                "В папке Scenarios не найдено доступных YAML-сценариев.",
+                "ShowroomBot",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
             return;
         }
 
@@ -311,15 +308,16 @@ public sealed class MainForm : Form
             return;
         }
 
+        _demoController.StartDemo(automatic: false);
         _isTestScenarioRunning = true;
         UpdateView();
         try
         {
-            var screenshotPath = await _rdpTestScenario.RunAsync();
+            await _demoScenario.RunAsync(scenario.Definition);
             _notifyIcon.ShowBalloonTip(
                 4000,
                 "ShowroomBot",
-                $"Тест завершён. Снимок сохранён: {screenshotPath}",
+                $"Сценарий завершён: {scenario.Name}",
                 ToolTipIcon.Info);
         }
         catch (Exception exception)
@@ -327,7 +325,7 @@ public sealed class MainForm : Form
             MessageBox.Show(
                 this,
                 exception.Message,
-                "Ошибка теста RDP",
+                "Ошибка сценария",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
             _demoController.StopDemo();
@@ -387,10 +385,11 @@ public sealed class MainForm : Form
 
         var isRunning = _demoController.State == AppState.DemoRunning;
         var canOpenRdp = IsReadyForRdp();
-        _startButton.Enabled = !isRunning && !_isTestScenarioRunning;
+        var hasSelectedScenario = _scenarioComboBox.SelectedItem is ScenarioDescriptor;
+        _startButton.Enabled = !isRunning && !_isTestScenarioRunning && hasSelectedScenario;
         _stopButton.Enabled = isRunning && !_isTestScenarioRunning;
         _openRdpButton.Enabled = canOpenRdp;
-        _startMenuItem.Enabled = !isRunning && !_isTestScenarioRunning;
+        _startMenuItem.Enabled = !isRunning && !_isTestScenarioRunning && hasSelectedScenario;
         _stopMenuItem.Enabled = isRunning && !_isTestScenarioRunning;
         _openRdpMenuItem.Enabled = canOpenRdp;
 

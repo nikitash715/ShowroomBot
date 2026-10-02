@@ -6,8 +6,19 @@ public static partial class NativeMethods
 {
     internal const int SW_RESTORE = 9;
     internal const uint INPUT_KEYBOARD = 1;
+    internal const uint INPUT_MOUSE = 0;
     internal const uint KEYEVENTF_KEYUP = 0x0002;
     internal const uint KEYEVENTF_UNICODE = 0x0004;
+    internal const uint MOUSEEVENTF_MOVE = 0x0001;
+    internal const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    internal const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    internal const uint MOUSEEVENTF_WHEEL = 0x0800;
+    internal const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
+    internal const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
+    internal const int SM_XVIRTUALSCREEN = 76;
+    internal const int SM_YVIRTUALSCREEN = 77;
+    internal const int SM_CXVIRTUALSCREEN = 78;
+    internal const int SM_CYVIRTUALSCREEN = 79;
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -34,6 +45,13 @@ public static partial class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    internal static extern int GetSystemMetrics(int nIndex);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct LASTINPUTINFO

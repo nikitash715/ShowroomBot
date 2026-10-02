@@ -1,0 +1,14 @@
+name: "Сценарий 1"
+steps:
+  - type: Open1C
+    executable: 'C:\Program Files\1cv8\common\1cestart.exe'
+    server: '10.40.11.50'
+    database: 'dev_erp_sakharov'
+    user: 'Сахаров Никита Борисович'
+    password: '0304'
+    typingDelayMs: 80
+    afterActivationDelayMs: 1000
+    afterRunDialogDelayMs: 500
+    afterLaunchDelayMs: 1000
+  - type: Open1CSection
+    section: "Infostart Toolkit"

@@ -1,4 +1,4 @@
-﻿autoStartDemo: true
+﻿autoStartDemo: false
 idleMinutes: 10
 
 vpn:
@@ -13,3 +13,8 @@ rdp:
   userName: KLO06001@dpc.msmash.ru
   checkIntervalSeconds: 5
   connectTimeoutSeconds: 2
+
+automation:
+  mouse:
+    movementDurationMilliseconds: 300
+    stepDelayMilliseconds: 10

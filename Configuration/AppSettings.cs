@@ -2,10 +2,11 @@
 
 public sealed class AppSettings
 {
-    public bool AutoStartDemo { get; set; } = true;
+    public bool AutoStartDemo { get; set; }
     public int IdleMinutes { get; set; } = 10;
     public VpnSettings Vpn { get; set; } = new();
     public RdpSettings Rdp { get; set; } = new();
+    public AutomationSettings Automation { get; set; } = new();
 }
 
 public sealed class VpnSettings
@@ -21,4 +22,15 @@ public sealed class RdpSettings
     public string UserName { get; set; } = "KLO06001@dpc.msmash.ru";
     public int CheckIntervalSeconds { get; set; } = 5;
     public int ConnectTimeoutSeconds { get; set; } = 2;
+}
+
+public sealed class AutomationSettings
+{
+    public MouseSettings Mouse { get; set; } = new();
+}
+
+public sealed class MouseSettings
+{
+    public int MovementDurationMilliseconds { get; set; }
+    public int StepDelayMilliseconds { get; set; }
 }

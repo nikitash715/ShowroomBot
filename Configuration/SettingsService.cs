@@ -62,6 +62,8 @@ public sealed class SettingsService
 
         settings.Vpn ??= new VpnSettings();
         settings.Rdp ??= new RdpSettings();
+        settings.Automation ??= new AutomationSettings();
+        settings.Automation.Mouse ??= new MouseSettings();
 
         var defaultVpnSettings = new VpnSettings();
         if (settings.Vpn.ConnectionNames.Length == 0)
@@ -99,5 +101,10 @@ public sealed class SettingsService
         {
             settings.Rdp.ConnectTimeoutSeconds = defaultRdpSettings.ConnectTimeoutSeconds;
         }
+
+        settings.Automation.Mouse.MovementDurationMilliseconds =
+            Math.Max(0, settings.Automation.Mouse.MovementDurationMilliseconds);
+        settings.Automation.Mouse.StepDelayMilliseconds =
+            Math.Max(0, settings.Automation.Mouse.StepDelayMilliseconds);
     }
 }

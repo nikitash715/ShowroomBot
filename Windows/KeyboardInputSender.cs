@@ -37,6 +37,25 @@ public sealed class KeyboardInputSender
         SendInputs(inputs.ToArray());
     }
 
+    public async Task SendTextAsync(
+        string text,
+        TimeSpan characterDelay,
+        CancellationToken cancellationToken = default)
+    {
+        foreach (var character in text)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            SendInputs(
+                CreateUnicodeInput(character, keyUp: false),
+                CreateUnicodeInput(character, keyUp: true));
+
+            if (characterDelay > TimeSpan.Zero)
+            {
+                await Task.Delay(characterDelay, cancellationToken);
+            }
+        }
+    }
+
     private static NativeMethods.INPUT CreateVirtualKeyInput(ushort virtualKey, bool keyUp)
     {
         return new NativeMethods.INPUT
