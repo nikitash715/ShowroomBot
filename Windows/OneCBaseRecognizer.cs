@@ -1,7 +1,61 @@
+using System.Drawing.Imaging;
+using Windows.Graphics.Imaging;
+using Windows.Media.Ocr;
+using Windows.Storage;
+
 namespace ShowroomBot.Windows;
+
+public sealed record OneCWindowRecognition(bool IsTargetClient, string Description);
 
 public static class OneCBaseRecognizer
 {
+    public static async Task<OneCWindowRecognition> RecognizeWindowAsync(
+        string screenshotPath, Color expected, int tolerance, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        using var image = new Bitmap(screenshotPath);
+        var hasColor = HasPanelColor(image, expected, tolerance);
+        // Inspect title/menu area, not arbitrary references to the configurator in workspace text.
+        using var header = image.Clone(new Rectangle(0, 0, image.Width, Math.Max(1, image.Height / 4)), PixelFormat.Format32bppArgb);
+        var headerPath = Path.ChangeExtension(screenshotPath, ".window-header.png");
+        header.Save(headerPath, ImageFormat.Png);
+        var file = await StorageFile.GetFileFromPathAsync(Path.GetFullPath(headerPath)).AsTask(token);
+        using var stream = await file.OpenReadAsync().AsTask(token);
+        var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token);
+        using var bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied).AsTask(token);
+        if (bitmap.PixelWidth > OcrEngine.MaxImageDimension || bitmap.PixelHeight > OcrEngine.MaxImageDimension)
+            throw new InvalidOperationException("Open1C: размер screenshot превышает предел Windows OCR.");
+        var languages = OcrEngine.AvailableRecognizerLanguages
+            .Where(language => language.LanguageTag.StartsWith("ru", StringComparison.OrdinalIgnoreCase) ||
+                language.LanguageTag.StartsWith("en", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (languages.Length == 0)
+            throw new InvalidOperationException("Open1C: для исключения конфигуратора нужен русский или английский Windows OCR.");
+        var headers = new List<string>();
+        foreach (var language in languages)
+        {
+            token.ThrowIfCancellationRequested();
+            var engine = OcrEngine.TryCreateFromLanguage(language)
+                ?? throw new InvalidOperationException($"Open1C: недоступен OCR {language.LanguageTag}.");
+            var result = await engine.RecognizeAsync(bitmap).AsTask(token);
+            headers.Add(result.Text);
+        }
+        var text = string.Join(Environment.NewLine, headers);
+        await File.WriteAllTextAsync(Path.ChangeExtension(screenshotPath, ".window-header.txt"), text, token);
+        return ClassifyWindow(hasColor, text);
+    }
+
+    public static OneCWindowRecognition ClassifyWindow(bool hasPanelColor, string headerText)
+    {
+        var text = string.Concat(headerText.Where(char.IsLetterOrDigit)).ToUpperInvariant();
+        var configurator = text.Contains("КОНФИГУРАТОР") || text.Contains("CONFIGURATOR") ||
+            text.Contains("DESIGNER") || (text.Contains("КОНФИГУРАЦИЯ") && text.Contains("ОТЛАДКА"));
+        if (configurator)
+            return new(false, $"конфигуратор; цвет панели {(hasPanelColor ? "совпадает, окно исключено" : "не совпадает")}");
+        return hasPanelColor
+            ? new(true, "пользовательский клиент по цвету панели; признаков конфигуратора не обнаружено")
+            : new(false, "другое окно или другая база: цвет панели не совпадает");
+    }
+
     public static bool HasPanelColor(Bitmap image, Color expected, int tolerance)
     {
         var rows = 0;

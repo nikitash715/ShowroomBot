@@ -26,16 +26,17 @@ public sealed class KeyboardInputSender
             CreateVirtualKeyInput(VirtualKeyEnter, keyUp: true));
     }
 
-    // RDP equivalent of Alt+Tab. Holding Alt avoids toggling the two MRU windows.
+    // Hold Alt across all Tab presses to select an MRU index instead of toggling two windows.
+    // mstsc must forward Windows key combinations to the remote computer.
     public void SelectRemoteWindow(int index)
     {
         const ushort alt = 0x12;
-        const ushort pageUp = 0x21;
+        const ushort tab = 0x09;
         SendInputs(CreateVirtualKeyInput(alt, false));
         try
         {
             for (var i = 0; i < index; i++)
-                SendInputs(CreateVirtualKeyInput(pageUp, false), CreateVirtualKeyInput(pageUp, true));
+                SendInputs(CreateVirtualKeyInput(tab, false), CreateVirtualKeyInput(tab, true));
         }
         finally
         {
