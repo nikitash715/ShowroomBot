@@ -11,15 +11,15 @@ public sealed class AppSettings
 
 public sealed class VpnSettings
 {
-    public string[] ConnectionNames { get; set; } = ["KLEVER VPN", "KLEVER VPN2"];
+    public string[] ConnectionNames { get; set; } = ["My VPN"];
     public int CheckIntervalSeconds { get; set; } = 5;
 }
 
 public sealed class RdpSettings
 {
-    public string Host { get; set; } = "192.168.174.132";
+    public string Host { get; set; } = string.Empty;
     public int Port { get; set; } = 3389;
-    public string UserName { get; set; } = "KLO06001@dpc.msmash.ru";
+    public string UserName { get; set; } = string.Empty;
     public int CheckIntervalSeconds { get; set; } = 5;
     public int ConnectTimeoutSeconds { get; set; } = 2;
 }

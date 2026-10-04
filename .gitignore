@@ -5,6 +5,15 @@
 
 # dotenv files
 .env
+.env.*
+!.env.example
+
+# Local connection settings and scenarios may contain credentials.
+/config.yaml
+/Scenarios/*.yaml
+/Scenarios/*.yml
+# Screenshots and OCR output may contain application data.
+diagnostics/
 
 # User-specific files
 *.rsuser

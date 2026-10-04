@@ -1,0 +1,31 @@
+# Пример для публикации: все адреса и имена ниже являются заглушками.
+# Скопируйте файл в config.yaml и укажите свои настройки.
+# config.yaml исключён из Git; не добавляйте его через git add -f.
+# Пароль 1С задаётся в локальном сценарии Scenarios/*.yaml,
+# а учётные данные RDP вводятся в клиенте удалённого рабочего стола.
+# При сохранении настроек приложение перезаписывает config.yaml без комментариев.
+
+# Автозапуск сейчас отключён программой при старте.
+autoStartDemo: false
+idleMinutes: 10
+
+vpn:
+  # Имена VPN-соединений/сетевых адаптеров на вашем компьютере.
+  connectionNames:
+    - My VPN
+  checkIntervalSeconds: 5
+
+rdp:
+  # Замените пример на адрес своего RDP-сервера.
+  host: rdp.example.com
+  port: 3389
+  # Имя пользователя; пароль в этом файле не хранится.
+  userName: 'DOMAIN\username'
+  checkIntervalSeconds: 5
+  connectTimeoutSeconds: 2
+
+automation:
+  mouse:
+    # Длительность плавного движения и интервал между перемещениями, мс.
+    movementDurationMilliseconds: 300
+    stepDelayMilliseconds: 10
