@@ -37,7 +37,7 @@ internal static class Program
         var idleDetector = new IdleDetector();
         var vpnDetector = new VpnDetector();
         var rdpAvailabilityChecker = new RdpAvailabilityChecker();
-        var rdpController = new RdpController();
+        var rdpController = new RdpController(settings.Rdp.Host);
         var keyboardInputSender = new KeyboardInputSender(settings.Automation.Typing);
         var scenarioStepFactory = new ScenarioStepFactory(rdpController, keyboardInputSender,
             new MouseInputSender(settings.Automation.Mouse), new WindowScreenshotService(), new OneCSectionRecognizer());

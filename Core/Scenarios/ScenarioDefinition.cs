@@ -18,12 +18,10 @@ public sealed class ScenarioStepDefinition
     public string Database { get; set; } = string.Empty;
     public string User { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
-    public int AfterActivationDelayMs { get; set; }
-    public int AfterRunDialogDelayMs { get; set; }
-    public int AfterLaunchDelayMs { get; set; }
-    public bool ReuseExistingWindow { get; set; } = true;
+    public int AfterActivationDelayMs { get; set; } = 1000;
+    public int AfterRunDialogDelayMs { get; set; } = 500;
     public string PanelColor { get; set; } = "#C0DCC0";
-    public int ColorTolerance { get; set; } = 8;
+    public int ColorTolerance { get; set; } = 9;
     public int ReadyTimeoutSeconds { get; set; } = 60;
     public int PollIntervalMs { get; set; } = 500;
     public int WindowSwitchDelayMs { get; set; } = 700;

@@ -33,6 +33,16 @@ public static partial class NativeMethods
     [DllImport("user32.dll")]
     internal static extern IntPtr GetForegroundWindow();
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder className, int maxCount);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetLastActivePopup(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindowVisible(IntPtr hWnd);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);

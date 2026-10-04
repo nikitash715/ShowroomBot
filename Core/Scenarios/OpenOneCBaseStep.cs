@@ -32,32 +32,26 @@ public sealed class OpenOneCBaseStep : IScenarioStep
         cancellationToken.ThrowIfCancellationRequested();
         ValidateDefinition();
 
-        if (!_rdpController.TryActivateExistingWindow(out var windowHandle))
-        {
-            throw new InvalidOperationException("Не найдено открытое окно mstsc или его не удалось активировать.");
-        }
+        var windowHandle = await _rdpController.OpenOrActivateAsync(cancellationToken);
 
         await DelayAsync(_definition.AfterActivationDelayMs, cancellationToken);
         var color = ParsePanelColor();
-        if (_definition.ReuseExistingWindow)
+        var searchTimer = Stopwatch.StartNew();
+        ScenarioExecution.Log("Начало поиска открытой базы 1С по цвету панели");
+        try
         {
-            var searchTimer = Stopwatch.StartNew();
-            ScenarioExecution.Log("Начало поиска открытой базы 1С по цвету панели");
-            try
+            var found = await FindExistingAsync(windowHandle, color, cancellationToken);
+            ScenarioExecution.Log($"Поиск открытой базы: {(found ? "найдена" : "не найдена")}; затрачено {searchTimer.Elapsed.TotalSeconds:F3} с");
+            if (found)
             {
-                var found = await FindExistingAsync(windowHandle, color, cancellationToken);
-                ScenarioExecution.Log($"Поиск открытой базы: {(found ? "найдена" : "не найдена")}; затрачено {searchTimer.Elapsed.TotalSeconds:F3} с");
-                if (found)
-                {
-                    ScenarioExecution.Log("Open1C: reused existing");
-                    return;
-                }
+                ScenarioExecution.Log("Open1C: reused existing");
+                return;
             }
-            catch
-            {
-                ScenarioExecution.Log($"Поиск открытой базы прерван; затрачено {searchTimer.Elapsed.TotalSeconds:F3} с");
-                throw;
-            }
+        }
+        catch
+        {
+            ScenarioExecution.Log($"Поиск открытой базы прерван; затрачено {searchTimer.Elapsed.TotalSeconds:F3} с");
+            throw;
         }
         cancellationToken.ThrowIfCancellationRequested();
         _keyboardInputSender.SendWindowsRun();

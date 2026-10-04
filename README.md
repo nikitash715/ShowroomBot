@@ -11,7 +11,7 @@ Windows-приложение для выполнения YAML-сценариев
 ```powershell
 Copy-Item configexample.yaml config.yaml
 New-Item -ItemType Directory -Force Scenarios
-Copy-Item Examples/Scenario1.example.yaml Scenarios/Scenario1.yaml
+Copy-Item Examples/ScenarioReference.example.yaml Scenarios/Scenario1.yaml
 ```
 
 Заполните `config.yaml` своими параметрами VPN/RDP, а
@@ -28,10 +28,18 @@ dotnet run
 
 ## Запросы Infostart Toolkit
 
-Пример составного шага: `Examples/ExecuteToolkitQuery.example.yaml`. Скопируйте
+Справочник всех шагов: `Examples/ScenarioReference.example.yaml`. Скопируйте
 его под новым именем в `Scenarios`, заполните параметры запуска базы и цвет её
 панели. Команда открытия: `Infostart Toolkit` → `Консоль запросов`.
-Шаг `ExecuteToolkitQuery` использует параметры поиска/запуска `Open1C`.
+Шаг `Open1C` автоматически открывает RDP по адресу из `config.yaml`, используя
+тот же механизм, что кнопка «Открыть RDP», или активирует существующее окно.
+Шаг ожидает окно удалённого сеанса без открытых диалогов подключения
+и пять секунд устойчивого фокуса перед продолжением. Ожидание ограничено
+60 секундами и поддерживает отмену. Проверка окна и фокуса не подтверждает
+завершение загрузки всех программ на удалённом рабочем столе.
+Сначала шаг `Open1C` находит или запускает базу, затем `ExecuteToolkitQuery`
+открывает консоль и выполняет запрос в уже активной 1С. Параметры запуска,
+учётные данные и настройки поиска окна задаются только в `Open1C`.
 
 `queryFile` разрешается относительно каталога приложения. Запросы в UTF-8
 хранятся в `Queries1c`; все `Queries1c/**/*.txt` копируются при сборке
@@ -39,8 +47,7 @@ dotnet run
 укажите его путь в следующем шаге — изменения C# не требуются.
 Содержимое файла проверяется до действий в интерфейсе. Способ ввода задаётся
 в шаге: `queryInputMode: paste` — вставка, `queryInputMode: typing` — набор
-(по умолчанию для сценариев без настройки). В рабочем Scenario2 и примере
-выбрана вставка для быстрого тестирования. Для вставки включите передачу
+(по умолчанию для сценариев без настройки). В справочнике указан режим typing по умолчанию. Для вставки включите передачу
 буфера обмена в mstsc: текст проверяется обратным копированием из редактора,
 при несовпадении запуск отменяется; прежний локальный буфер восстанавливается.
 `queryInputTimeoutSeconds` ограничивает время вставки и проверки.
@@ -72,7 +79,12 @@ queryInputTimeoutSeconds задаёт минимальный лимит. При 
 Изменения поведения применяются после перезапуска приложения. Отмена и
 Ctrl+Alt+F12 прерывают также случайные паузы и перемещения.
 
-Параметры ожиданий: `consoleTimeoutSeconds: 30`, `queryInputTimeoutSeconds: 20`, `queryTimeoutSeconds: 120`,
+Все задержки, таймауты и интервалы шагов необязательны; значения по умолчанию
+заданы в `ScenarioStepDefinition`. Рабочие файлы в `Scenarios` не содержат
+параметров времени и комментариев. Полный комментированный справочник всех
+четырёх типов шагов — `Examples/ScenarioReference.example.yaml`.
+
+Значения по умолчанию для ожиданий: `consoleTimeoutSeconds: 30`, `queryInputTimeoutSeconds: 20`, `queryTimeoutSeconds: 120`,
 `pollIntervalMs: 500`, `resultStablePolls: 3`. Прокрутка:
 `scrollNotches: 2`, `scrollPauseMs: 700`, `scrollTimeoutSeconds: 50`,
 `maxScrollAttempts: 300`, `scrollUnchangedAttempts: 4`.
@@ -99,7 +111,7 @@ dotnet run --project Tests/ShowroomBot.Checks.csproj
 
 ## Публикация исходников
 
-В Git публикуются `configexample.yaml` и `Examples/Scenario1.example.yaml`
+В Git публикуются `configexample.yaml` и `Examples/ScenarioReference.example.yaml`
 с вымышленными значениями. Рабочие `config.yaml`, `Scenarios/*.yaml`,
 диагностика и результаты сборки исключены через `.gitignore`.
 Не добавляйте локальные настройки принудительно через `git add -f`.

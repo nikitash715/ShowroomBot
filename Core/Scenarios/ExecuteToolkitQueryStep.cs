@@ -27,7 +27,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         var token = linked.Token;
         try
         {
-            await new OpenOneCBaseStep(definition, rdp, keyboard, screenshots).ExecuteAsync(token);
+            // Open1C is a separate scenario step; use the client it left active in RDP.
             var (_, layout) = await Observe(token);
             if (layout.ConsoleTab is Rectangle tab)
                 await Click(tab, token);

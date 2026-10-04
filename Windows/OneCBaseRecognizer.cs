@@ -15,6 +15,10 @@ public static class OneCBaseRecognizer
         token.ThrowIfCancellationRequested();
         using var image = new Bitmap(screenshotPath);
         var hasColor = HasPanelColor(image, expected, tolerance);
+        token.ThrowIfCancellationRequested();
+        // Skip header preparation and OCR entirely for windows without the target panel.
+        if (!hasColor)
+            return ClassifyWindow(false, string.Empty);
         // Inspect title/menu area, not arbitrary references to the configurator in workspace text.
         using var header = image.Clone(new Rectangle(0, 0, image.Width, Math.Max(1, image.Height / 4)), PixelFormat.Format32bppArgb);
         var headerPath = Path.ChangeExtension(screenshotPath, ".window-header.png");
@@ -68,10 +72,10 @@ public static class OneCBaseRecognizer
                 run = Similar(image.GetPixel(x, y), expected, tolerance) ? run + 4 : 0;
                 longest = Math.Max(longest, run);
             }
-            if (longest >= 80) rows++;
+            if (longest >= 80 && ++rows >= 8) return true;
         }
         // Require a substantial panel area, not isolated colour matches.
-        return rows >= 8;
+        return false;
     }
 
     public static bool SameWindow(Bitmap first, Bitmap second)

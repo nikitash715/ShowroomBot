@@ -4,6 +4,7 @@ using ShowroomBot.Windows;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 using ShowroomBot.Configuration;
+using ShowroomBot.Rdp;
 
 static void Check(bool value, string message)
 {
@@ -24,6 +25,8 @@ foreach (var target in new[] { new Point(1000, 600), new Point(-500, -300), new 
 using (var cancelled = new CancellationTokenSource())
 {
     cancelled.Cancel();
+    try { await new RdpController("unused.example").OpenOrActivateAsync(cancelled.Token); throw new Exception("Отмена открытия RDP потеряна"); }
+    catch (OperationCanceledException) { Console.WriteLine("PASS: отмена до открытия или активации RDP"); }
     try { await new KeyboardInputSender().SendTextAsync("не отправлять", cancelled.Token); throw new Exception("Отмена текста потеряна"); }
     catch (OperationCanceledException) { Console.WriteLine("PASS: отмена до отправки текста"); }
     try { await new MouseInputSender().MoveToAsync(new Point(10, 10), cancelled.Token); throw new Exception("Отмена мыши потеряна"); }
@@ -89,6 +92,36 @@ foreach (ushort key in new ushort[] { 0x24, 0x23, 0x2E }) // Home, End, Delete
 }
 
 Check(!OneCBaseRecognizer.ClassifyWindow(true, "1С: Конфигуратор").IsTargetClient, "конфигуратор исключён при совпадении цвета");
+Check(OneCBaseRecognizer.ClassifyWindow(true, "1С: Предприятие").IsTargetClient,
+    "пользовательский клиент принимается при совпадении цвета");
+var noPanelPath = Path.Combine(Path.GetTempPath(), $"open1c-no-panel-{Guid.NewGuid():N}.png");
+try
+{
+    // Too wide for Windows OCR: a negative colour check must return before invoking it.
+    using var image = new Bitmap(20000, 40);
+    using var graphics = Graphics.FromImage(image);
+    graphics.Clear(Color.White);
+    image.Save(noPanelPath);
+    var recognition = await OneCBaseRecognizer.RecognizeWindowAsync(
+        noPanelPath, Color.FromArgb(192, 220, 192), 0, CancellationToken.None);
+    Check(!recognition.IsTargetClient &&
+        !File.Exists(Path.ChangeExtension(noPanelPath, ".window-header.png")) &&
+        !File.Exists(Path.ChangeExtension(noPanelPath, ".window-header.txt")),
+        "окно без цвета панели пропускается без подготовки заголовка и OCR");
+    using var panelBrush = new SolidBrush(Color.FromArgb(192, 220, 192));
+    graphics.FillRectangle(panelBrush, 0, 0, 80, 28);
+    Check(!OneCBaseRecognizer.HasPanelColor(image, Color.FromArgb(192, 220, 192), 0),
+        "семь строк совпадающего цвета недостаточны для панели");
+    graphics.FillRectangle(panelBrush, 0, 28, 80, 4);
+    Check(OneCBaseRecognizer.HasPanelColor(image, Color.FromArgb(192, 220, 192), 0),
+        "восемь строк совпадающего цвета подтверждают панель");
+}
+finally
+{
+    File.Delete(noPanelPath);
+    File.Delete(Path.ChangeExtension(noPanelPath, ".window-header.png"));
+    File.Delete(Path.ChangeExtension(noPanelPath, ".window-header.txt"));
+}
 foreach (var (scale, offset) in new[] { (1, 0), (2, 40) })
 {
     using var image = new Bitmap(1000 * scale + offset, 800 * scale + offset);
@@ -165,21 +198,45 @@ using (var cancellation = new CancellationTokenSource())
     catch (OperationCanceledException) { Console.WriteLine("PASS: отмена распознавания геометрии"); }
 }
 var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../"));
-var yaml = File.ReadAllText(Path.Combine(root, "Examples/ExecuteToolkitQuery.example.yaml"));
+var yaml = File.ReadAllText(Path.Combine(root, "Examples/ScenarioReference.example.yaml"));
 var definition = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build()
     .Deserialize<ScenarioDefinition>(yaml);
-Check(definition.Steps.Single().Type == "ExecuteToolkitQuery" && definition.Steps[0].ScrollNotches == 2,
+Check(definition.Steps.Count == 4 && definition.Steps[0].Type == "Open1C" &&
+    definition.Steps[3].Type == "ExecuteToolkitQuery" && definition.Steps[3].ScrollNotches == 2,
     "пример YAML десериализуется с параметрами шага");
-Check(definition.Steps[0].QueryInputMode == "paste", "пример выбирает вставку запроса");
+Check(definition.Steps[3].QueryInputMode == "typing", "справочник использует набор по умолчанию");
+Check(!string.IsNullOrWhiteSpace(definition.Steps[0].Executable) &&
+    !string.IsNullOrWhiteSpace(definition.Steps[0].Database) &&
+    string.IsNullOrEmpty(definition.Steps[3].Executable) &&
+    string.IsNullOrEmpty(definition.Steps[3].Server) &&
+    string.IsNullOrEmpty(definition.Steps[3].Database) &&
+    string.IsNullOrEmpty(definition.Steps[3].User) &&
+    string.IsNullOrEmpty(definition.Steps[3].Password),
+    "параметры запуска базы задаются только в отдельном Open1C");
+var scenarioDeserializer = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
+var minimalStep = scenarioDeserializer.Deserialize<ScenarioStepDefinition>("type: Open1C\n");
+Check(minimalStep.AfterActivationDelayMs == 1000 && minimalStep.AfterRunDialogDelayMs == 500 &&
+    minimalStep.WindowSwitchDelayMs == 700 && minimalStep.PollIntervalMs == 500 && minimalStep.ScrollPauseMs == 700 &&
+    minimalStep.ReadyTimeoutSeconds == 60 && minimalStep.SectionOpenTimeoutSeconds == 5 && minimalStep.CommandTimeoutSeconds == 15 &&
+    minimalStep.ConsoleTimeoutSeconds == 30 && minimalStep.QueryInputTimeoutSeconds == 20 &&
+    minimalStep.QueryTimeoutSeconds == 120 && minimalStep.ScrollTimeoutSeconds == 50,
+    "YAML без параметров времени получает задержки и таймауты из кода");
+var overriddenStep = scenarioDeserializer.Deserialize<ScenarioStepDefinition>(
+    "type: Open1C\nafterActivationDelayMs: 0\nafterRunDialogDelayMs: 123\npollIntervalMs: 250\nscrollTimeoutSeconds: 180\n");
+Check(overriddenStep.AfterActivationDelayMs == 0 && overriddenStep.AfterRunDialogDelayMs == 123 &&
+    overriddenStep.PollIntervalMs == 250 && overriddenStep.ScrollTimeoutSeconds == 180,
+    "явные параметры времени переопределяют значения по умолчанию, включая нулевую паузу");
+Check(definition.Steps.Select(step => step.Type).SequenceEqual(
+    new[] { "Open1C", "Open1CSection", "Open1CCommand", "ExecuteToolkitQuery" }), "справочник содержит все типы шагов");
 Check(new ScenarioStepDefinition().QueryInputMode == "typing", "старые сценарии сохраняют клавиатурный ввод");
 var invalidInputMode = new ExecuteToolkitQueryStep(new ScenarioStepDefinition
-    { QueryFile = definition.Steps[0].QueryFile, QueryInputMode = "invalid" },
+    { QueryFile = definition.Steps[3].QueryFile, QueryInputMode = "invalid" },
     null!, null!, null!, null!, null!);
 try { await invalidInputMode.ExecuteAsync(); throw new Exception("Неизвестный способ ввода принят"); }
 catch (InvalidOperationException error) when (error.Message.Contains("queryInputMode"))
 { Console.WriteLine("PASS: неизвестный способ ввода отклонён до действий в RDP"); }
 Check(File.Exists(Path.Combine(Path.GetDirectoryName(typeof(ScenarioDefinition).Assembly.Location)!,
-    definition.Steps[0].QueryFile)), "запрос скопирован в выходной каталог");
+    definition.Steps[3].QueryFile)), "запрос скопирован в выходной каталог");
 var missing = new ExecuteToolkitQueryStep(new ScenarioStepDefinition { QueryFile = "missing-query.txt" },
     null!, null!, null!, null!, null!);
 try { await missing.ExecuteAsync(); throw new Exception("Отсутствующий файл принят"); }
