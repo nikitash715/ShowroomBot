@@ -65,8 +65,8 @@ public sealed class MainForm : Form
 
         Text = "ShowroomBot";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(480, 340);
-        Size = new Size(620, 380);
+        MinimumSize = new Size(620, 440);
+        Size = new Size(720, 440);
         Icon = LoadApplicationIcon();
 
         _stateValueLabel = CreateValueLabel();
@@ -75,7 +75,7 @@ public sealed class MainForm : Form
         _vpnValueLabel = CreateValueLabel();
         _rdpValueLabel = CreateValueLabel();
         _startButton = new Button { Text = "Запустить демонстрацию", AutoSize = true };
-        _stopButton = new Button { Text = "Остановить (Ctrl+Alt+F12)", AutoSize = true };
+        _stopButton = new Button { Text = "Остановить демонстрацию", AutoSize = true };
         _openRdpButton = new Button { Text = "Открыть RDP", AutoSize = true };
         _autoStartCheckBox = new CheckBox
         {
@@ -233,6 +233,7 @@ public sealed class MainForm : Form
 
         panel.Controls.Add(settingsPanel, 0, 6);
         panel.SetColumnSpan(settingsPanel, 2);
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var buttonPanel = new FlowLayoutPanel
         {
@@ -247,6 +248,17 @@ public sealed class MainForm : Form
 
         panel.Controls.Add(buttonPanel, 0, 7);
         panel.SetColumnSpan(buttonPanel, 2);
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var stopShortcutLabel = new Label
+        {
+            Text = "Остановка демонстрации: Ctrl+Alt+F12 (работает и в окне RDP)",
+            AutoSize = true,
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        panel.Controls.Add(stopShortcutLabel, 0, 8);
+        panel.SetColumnSpan(stopShortcutLabel, 2);
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         return panel;
     }
@@ -410,6 +422,9 @@ public sealed class MainForm : Form
     private void UpdateView()
     {
         _stateValueLabel.Text = GetDisplayState(_demoController.State);
+        _stateValueLabel.ForeColor = _demoController.State == AppState.DemoRunning
+            ? Color.DarkGreen
+            : SystemColors.ControlText;
         _thresholdValueLabel.Text = $"{_settings.IdleMinutes} мин.";
         _vpnValueLabel.Text = _vpnStatus.IsConnected
             ? $"{_vpnStatus.ActiveConnectionName} - подключен"

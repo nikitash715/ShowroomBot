@@ -29,6 +29,17 @@ public sealed class ScenarioStepDefinition
     public int PollIntervalMs { get; set; } = 500;
     public int WindowSwitchDelayMs { get; set; } = 700;
     public int MaxWindowsToCheck { get; set; } = 50;
+    public string QueryFile { get; set; } = string.Empty;
+    public string QueryInputMode { get; set; } = "typing";
+    public int ConsoleTimeoutSeconds { get; set; } = 30;
+    public int QueryInputTimeoutSeconds { get; set; } = 20;
+    public int QueryTimeoutSeconds { get; set; } = 120;
+    public int ScrollTimeoutSeconds { get; set; } = 50;
+    public int ScrollPauseMs { get; set; } = 700;
+    public int ScrollNotches { get; set; } = 2;
+    public int MaxScrollAttempts { get; set; } = 300;
+    public int ScrollUnchangedAttempts { get; set; } = 4;
+    public int ResultStablePolls { get; set; } = 3;
 }
 
 public sealed record ScenarioDescriptor(

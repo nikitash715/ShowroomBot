@@ -31,6 +31,10 @@ public sealed class ScenarioStepFactory
 
     public IScenarioStep Create(ScenarioStepDefinition definition)
     {
+        if (definition.Type.Equals("ExecuteToolkitQuery", StringComparison.OrdinalIgnoreCase))
+            return new ExecuteToolkitQueryStep(definition, _rdpController, _keyboardInputSender,
+                _mouseInputSender, _screenshots, _sectionRecognizer, _mouseSettings);
+
         if (definition.Type.Equals("Open1CCommand", StringComparison.OrdinalIgnoreCase))
         {
             return new OpenOneCCommandStep(definition, _rdpController, _mouseInputSender,

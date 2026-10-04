@@ -75,8 +75,10 @@ public sealed class OpenOneCBaseStep : IScenarioStep
         while (timer.Elapsed < timeout)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            using var screenshot = Capture(windowHandle);
-            if (OneCBaseRecognizer.HasPanelColor(screenshot, color, _definition.ColorTolerance))
+            var path = _screenshots.CaptureClientArea(windowHandle,
+                ScenarioExecution.Current?.DirectoryPath ?? Path.Combine(AppContext.BaseDirectory, "diagnostics", "open1c-ready"));
+            var recognition = await OneCBaseRecognizer.RecognizeWindowAsync(path, color, _definition.ColorTolerance, cancellationToken);
+            if (recognition.IsTargetClient)
             {
                 ScenarioExecution.Log($"Интерфейс базы найден; затрачено {timer.Elapsed.TotalSeconds:F3} с");
                 return;

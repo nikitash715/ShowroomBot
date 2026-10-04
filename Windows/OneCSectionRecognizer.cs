@@ -8,6 +8,7 @@ using Windows.Storage;
 namespace ShowroomBot.Windows;
 
 public sealed record SectionRecognition(Rectangle Panel, Rectangle? TextBounds);
+public sealed record RecognizedText(string Text, Rectangle Bounds);
 
 public sealed class SectionPanelNotFoundException : InvalidOperationException
 {
@@ -18,6 +19,26 @@ public sealed class SectionPanelNotFoundException : InvalidOperationException
 /// <summary>Image-based detection of the expanded left navigation panel; no section coordinates.</summary>
 public sealed class OneCSectionRecognizer
 {
+    // Shared Windows OCR entry point for recognizers that need relative layout.
+    public async Task<IReadOnlyList<RecognizedText>> ReadLinesAsync(string path, CancellationToken token)
+    {
+        var file = await StorageFile.GetFileFromPathAsync(Path.GetFullPath(path)).AsTask(token);
+        using var stream = await file.OpenReadAsync().AsTask(token);
+        var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token);
+        using var bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied).AsTask(token);
+        if (bitmap.PixelWidth > OcrEngine.MaxImageDimension || bitmap.PixelHeight > OcrEngine.MaxImageDimension)
+            throw new InvalidOperationException("Размер снимка превышает предел Windows OCR.");
+        var language = OcrEngine.AvailableRecognizerLanguages.FirstOrDefault(l => l.LanguageTag.StartsWith("ru"))
+            ?? throw new InvalidOperationException("Для консоли Toolkit установите русский компонент Windows OCR.");
+        var result = await OcrEngine.TryCreateFromLanguage(language)!.RecognizeAsync(bitmap).AsTask(token);
+        await File.WriteAllTextAsync(Path.ChangeExtension(path, ".toolkit-ocr.txt"), result.Text, token);
+        var lines = result.Lines.Where(l => l.Words.Count > 0).Select(l => new RecognizedText(l.Text,
+            Rectangle.FromLTRB((int)l.Words.Min(w => w.BoundingRect.Left), (int)l.Words.Min(w => w.BoundingRect.Top),
+                (int)Math.Ceiling(l.Words.Max(w => w.BoundingRect.Right)), (int)Math.Ceiling(l.Words.Max(w => w.BoundingRect.Bottom)))));
+        return lines.Concat(result.Lines.SelectMany(l => l.Words).Select(w => new RecognizedText(w.Text,
+            Rectangle.FromLTRB((int)w.BoundingRect.Left, (int)w.BoundingRect.Top,
+                (int)Math.Ceiling(w.BoundingRect.Right), (int)Math.Ceiling(w.BoundingRect.Bottom))))).ToArray();
+    }
     public async Task<SectionRecognition> RecognizeAsync(
         string screenshotPath, string section, CancellationToken cancellationToken)
     {

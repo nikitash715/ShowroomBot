@@ -1,0 +1,156 @@
+using System.Drawing;
+using ShowroomBot.Core.Scenarios;
+using ShowroomBot.Windows;
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
+
+static void Check(bool value, string message)
+{
+    if (!value) throw new Exception(message);
+    Console.WriteLine($"PASS: {message}");
+}
+
+// Inspect packets without sending any keys to the active window.
+var keyFactory = typeof(KeyboardInputSender).GetMethod("CreateVirtualKeyInput",
+    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+foreach (ushort key in new ushort[] { 0x24, 0x23, 0x2E }) // Home, End, Delete
+{
+    foreach (var keyUp in new[] { false, true })
+    {
+        var packet = keyFactory.Invoke(null, new object[] { key, keyUp })!;
+        var data = packet.GetType().GetField("data")!.GetValue(packet)!;
+        var input = data.GetType().GetField("keyboardInput")!.GetValue(data)!;
+        var flags = (uint)input.GetType().GetField("dwFlags")!.GetValue(input)!;
+        var scan = (ushort)input.GetType().GetField("wScan")!.GetValue(input)!;
+        var expectedScan = key switch { 0x24 => 0x47, 0x23 => 0x4F, _ => 0x53 };
+        Check(flags == (keyUp ? 11u : 9u) && scan == expectedScan,
+            $"RDP navigation key {key:X2}, keyUp={keyUp}: extended flag preserves navigation with NumLock");
+    }
+}
+
+Check(!OneCBaseRecognizer.ClassifyWindow(true, "1С: Конфигуратор").IsTargetClient, "конфигуратор исключён при совпадении цвета");
+foreach (var (scale, offset) in new[] { (1, 0), (2, 40) })
+{
+    using var image = new Bitmap(1000 * scale + offset, 800 * scale + offset);
+    using var graphics = Graphics.FromImage(image);
+    graphics.Clear(Color.White);
+    Rectangle R(int x, int y, int w, int h) => new(x * scale + offset, y * scale + offset, w * scale, h * scale);
+    graphics.DrawRectangle(Pens.Gray, R(300, 150, 650, 220));
+    graphics.DrawRectangle(Pens.Gray, R(150, 450, 800, 300));
+    var labels = new[]
+    {
+        new RecognizedText("Новый: Консоль разработчика (Toolkit)", R(150, 20, 400, 16)),
+        new RecognizedText("Новый: Консоль разработчика (Toolkit)", R(150, 50, 400, 16)),
+        new RecognizedText("Выполнить", R(200, 90, 80, 16)),
+        new RecognizedText("Текст", R(305, 125, 40, 16)),
+        new RecognizedText("Проверить", R(850, 390, 80, 16)),
+        new RecognizedText("Результат (Таблица, 100 строк)", R(165, 410, 230, 16))
+    };
+    var layout = ToolkitConsoleRecognizer.Analyze(image, labels);
+    Check(layout.Editor.HasValue && layout.Result.HasValue && layout.RowCount == 100,
+        $"границы редактора и результата при масштабе {scale} и смещении {offset}");
+    Check(layout.Execute == labels[2].Bounds, "верхняя кнопка Выполнить отделена от Проверить");
+    Check(ToolkitConsoleRecognizer.Analyze(image, labels.Where((_, index) => index != 1).ToArray()).Editor == null,
+        "вкладка неактивной консоли не принимается за активную форму");
+    graphics.DrawRectangle(Pens.Red, R(300, 150, 650, 220));
+    var errorLabels = labels.Select(l => l with { Text = l.Text.Replace("Toolkit", "Tolkit") }).Append(
+        new RecognizedText("(1, 1) Ожидается ВЫБРАТЬ", R(330, 390, 220, 16))).ToArray();
+    var errorLayout = ToolkitConsoleRecognizer.Analyze(image, errorLabels);
+    Check(errorLayout.Editor.HasValue && errorLayout.Execute == labels[2].Bounds && errorLayout.Error != null,
+        "красная рамка, ошибка синтаксиса и OCR Tolkit не теряют кнопку Выполнить");
+}
+var frame = new Rectangle(10, 10, 100, 100);
+Check(RdpClipboardQueryInput.NormalizeNewlines("ВЫБРАТЬ\r\n    Количество\r\nИЗ") == "ВЫБРАТЬ\n    Количество\nИЗ",
+    "сравнение вставки сохраняет отступы и границу строки перед ИЗ");
+var expectedQuery = "ВЫБРАТЬ\n    Количество\nИЗ";
+RdpClipboardQueryInput.ValidateCopiedText(expectedQuery, expectedQuery.Replace("\n", "\r\n"));
+foreach (var corrupted in new[] { "ф" + expectedQuery, expectedQuery.Replace("Количество\nИЗ", "КоличествоИЗ"),
+    expectedQuery.Replace("    Количество", "        Количество") })
+{
+    try { RdpClipboardQueryInput.ValidateCopiedText(expectedQuery, corrupted); throw new Exception("Повреждённый запрос принят"); }
+    catch (InvalidOperationException) { Console.WriteLine("PASS: повреждённый ввод блокирует запуск запроса"); }
+}
+var old = new ToolkitConsoleLayout(frame, frame, frame, frame, frame, 100, false, null, "7 мс");
+var progress = new ToolkitExecutionProgress(old, "old", 3);
+Check(!Enumerable.Range(0, 10).Any(_ => progress.Observe(old, "old")), "старый стабильный результат не завершает новый запуск");
+Check(!progress.Observe(old with { Result = null, RowCount = null }, null) &&
+    !Enumerable.Range(0, 5).Any(_ => progress.Observe(old, "old")), "сбой распознавания не подтверждает новый запуск");
+Check(!progress.Observe(old with { Busy = true }, "old"), "выполнение не считается завершённым");
+Check(!progress.Observe(old, "old") && !progress.Observe(old, "old") && progress.Observe(old, "old"),
+    "идентичный результат принят после наблюдаемого выполнения и стабилизации");
+progress = new ToolkitExecutionProgress(old, "old", 2);
+var empty = old with { RowCount = 0, Result = null };
+Check(!progress.Observe(empty, null) && progress.Observe(empty, null), "пустой новый результат успешно завершает шаг");
+progress = new ToolkitExecutionProgress(old, "old", 2);
+Check(!progress.Observe(old with { Error = "Ошибка запроса", ExecutionStamp = "8 мс" }, "new"), "ошибка не принимается за успех");
+using (var cancellation = new CancellationTokenSource())
+{
+    cancellation.Cancel();
+    using var image = new Bitmap(800, 600);
+    try
+    {
+        ToolkitConsoleRecognizer.Analyze(image, new[] {
+            new RecognizedText("Результат (Таблица, 1 строка)", new Rectangle(100, 100, 240, 16)) }, cancellation.Token);
+        throw new Exception("Отмена не сработала");
+    }
+    catch (OperationCanceledException) { Console.WriteLine("PASS: отмена распознавания геометрии"); }
+}
+var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../"));
+var yaml = File.ReadAllText(Path.Combine(root, "Examples/ExecuteToolkitQuery.example.yaml"));
+var definition = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build()
+    .Deserialize<ScenarioDefinition>(yaml);
+Check(definition.Steps.Single().Type == "ExecuteToolkitQuery" && definition.Steps[0].ScrollNotches == 2,
+    "пример YAML десериализуется с параметрами шага");
+Check(definition.Steps[0].QueryInputMode == "paste", "пример выбирает вставку запроса");
+Check(new ScenarioStepDefinition().QueryInputMode == "typing", "старые сценарии сохраняют клавиатурный ввод");
+var invalidInputMode = new ExecuteToolkitQueryStep(new ScenarioStepDefinition
+    { QueryFile = definition.Steps[0].QueryFile, QueryInputMode = "invalid" },
+    null!, null!, null!, null!, null!, null!);
+try { await invalidInputMode.ExecuteAsync(); throw new Exception("Неизвестный способ ввода принят"); }
+catch (InvalidOperationException error) when (error.Message.Contains("queryInputMode"))
+{ Console.WriteLine("PASS: неизвестный способ ввода отклонён до действий в RDP"); }
+Check(File.Exists(Path.Combine(Path.GetDirectoryName(typeof(ScenarioDefinition).Assembly.Location)!,
+    definition.Steps[0].QueryFile)), "запрос скопирован в выходной каталог");
+var missing = new ExecuteToolkitQueryStep(new ScenarioStepDefinition { QueryFile = "missing-query.txt" },
+    null!, null!, null!, null!, null!, null!);
+try { await missing.ExecuteAsync(); throw new Exception("Отсутствующий файл принят"); }
+catch (FileNotFoundException) { Console.WriteLine("PASS: отсутствующий файл отклонён до обращения к RDP"); }
+var emptyFile = Path.GetTempFileName();
+try
+{
+    var step = new ExecuteToolkitQueryStep(new ScenarioStepDefinition { QueryFile = emptyFile },
+        null!, null!, null!, null!, null!, null!);
+    try { await step.ExecuteAsync(); throw new Exception("Пустой файл принят"); }
+    catch (InvalidDataException) { Console.WriteLine("PASS: пустой файл отклонён до обращения к RDP"); }
+}
+finally { File.Delete(emptyFile); }
+var bitmapPath = Path.Combine(Path.GetTempPath(), $"toolkit-check-{Guid.NewGuid():N}.png");
+try
+{
+    using var image = new Bitmap(600, 400);
+    using var graphics = Graphics.FromImage(image);
+    graphics.Clear(Color.White);
+    var region = new Rectangle(20, 20, 560, 360);
+    var pointer = new Point(350, 200);
+    graphics.FillRectangle(Brushes.DarkGray, 569, 70, 5, 60);
+    image.Save(bitmapPath);
+    Check(!ToolkitConsoleRecognizer.ScrollbarAtBottom(bitmapPath, region), "ползунок вверху не означает конец");
+    var first = ToolkitConsoleRecognizer.Fingerprint(bitmapPath, region, pointer);
+    graphics.FillRectangle(Brushes.Black, pointer.X, pointer.Y, 10, 10);
+    image.Save(bitmapPath);
+    Check(first == ToolkitConsoleRecognizer.Fingerprint(bitmapPath, region, pointer), "курсор исключён из сравнения результата");
+    graphics.FillRectangle(Brushes.White, 569, 70, 5, 60);
+    graphics.FillRectangle(Brushes.DarkGray, 569, 300, 5, 65);
+    image.Save(bitmapPath);
+    Check(ToolkitConsoleRecognizer.ScrollbarAtBottom(bitmapPath, region), "нижнее положение ползунка распознаётся");
+}
+finally { File.Delete(bitmapPath); }
+foreach (var screenshot in args)
+{
+    var actual = await new ToolkitConsoleRecognizer(new OneCSectionRecognizer()).RecognizeAsync(screenshot, CancellationToken.None);
+    Check(actual.Editor != null && actual.Execute != null,
+        $"реальный снимок: редактор {actual.Editor}, Выполнить {actual.Execute}");
+    if (actual.RowCount > 0)
+        Check(actual.Result != null, $"реальный снимок: видимая область результата {actual.Result}");
+}
+Console.WriteLine("Все проверки пройдены.");
