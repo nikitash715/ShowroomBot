@@ -28,6 +28,9 @@ public sealed class ScenarioStepFactory
 
     public IScenarioStep Create(ScenarioStepDefinition definition)
     {
+        if (definition.Type.Equals("Wait", StringComparison.OrdinalIgnoreCase))
+            return new WaitStep(definition);
+
         if (definition.Type.Equals("ExecuteToolkitQuery", StringComparison.OrdinalIgnoreCase))
             return new ExecuteToolkitQueryStep(definition, _rdpController, _keyboardInputSender,
                 _mouseInputSender, _screenshots, _sectionRecognizer);

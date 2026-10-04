@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using ShowroomBot.Configuration;
 using ShowroomBot.Rdp;
@@ -160,24 +159,15 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(definition.QueryTimeoutSeconds));
         var progress = new ToolkitExecutionProgress(before, baseline, definition.ResultStablePolls);
-        var elapsed = Stopwatch.StartNew();
         try
         {
             while (true)
             {
                 var (path, layout) = await Observe(timeout.Token);
-                if (layout.Error != null)
-                {
-                    // 1C can retain the previous validation message while the click is processed.
-                    if (before.Error != null && elapsed.Elapsed < TimeSpan.FromSeconds(2))
-                    {
-                        await Task.Delay(definition.PollIntervalMs, timeout.Token);
-                        continue;
-                    }
-                    throw new ToolkitQueryExecutionException($"Toolkit: ошибка запроса: {layout.Error}");
-                }
                 var fingerprint = layout.Result is Rectangle area ? ToolkitConsoleRecognizer.Fingerprint(path, area) : null;
                 if (progress.Observe(layout, fingerprint)) return layout;
+                if (progress.HasConfirmedError)
+                    throw new ToolkitQueryExecutionException($"Toolkit: ошибка запроса: {layout.Error}");
                 await Task.Delay(definition.PollIntervalMs, timeout.Token);
             }
         }
@@ -240,10 +230,13 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
                 }
                 layout = next;
             }
-            throw new TimeoutException("Toolkit: достигнут maxScrollAttempts до конца таблицы.");
+            token.ThrowIfCancellationRequested();
+            ScenarioExecution.Log($"Toolkit: достигнут maxScrollAttempts ({definition.MaxScrollAttempts}); конец таблицы не подтверждён. Запрос выполнен успешно, шаг завершён с неполной прокруткой.");
         }
-        catch (OperationCanceledException) when (!token.IsCancellationRequested)
-        { throw new TimeoutException("Toolkit: превышен scrollTimeoutSeconds до конца таблицы."); }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested && !token.IsCancellationRequested)
+        {
+            ScenarioExecution.Log($"Toolkit: превышен scrollTimeoutSeconds ({definition.ScrollTimeoutSeconds} с); конец таблицы не подтверждён. Запрос выполнен успешно, шаг завершён с неполной прокруткой.");
+        }
     }
 
     private IntPtr Activate(CancellationToken token)

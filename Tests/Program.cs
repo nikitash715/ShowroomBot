@@ -185,6 +185,29 @@ var empty = old with { RowCount = 0, Result = null };
 Check(!progress.Observe(empty, null) && progress.Observe(empty, null), "пустой новый результат успешно завершает шаг");
 progress = new ToolkitExecutionProgress(old, "old", 2);
 Check(!progress.Observe(old with { Error = "Ошибка запроса", ExecutionStamp = "8 мс" }, "new"), "ошибка не принимается за успех");
+var staleError = old with { Error = "Ошибка запроса" };
+progress = new ToolkitExecutionProgress(staleError, "old", 2);
+Check(!Enumerable.Range(0, 10).Any(_ => progress.Observe(staleError, "old") || progress.HasConfirmedError),
+    "старая ошибка не подтверждается по истечении времени");
+Check(!progress.Observe(staleError, "new") && !progress.HasConfirmedError &&
+    progress.Observe(staleError, "new") && !progress.HasConfirmedError,
+    "новый стабильный результат имеет приоритет над сообщением об ошибке");
+progress = new ToolkitExecutionProgress(old, "old", 2);
+Check(!progress.Observe(staleError, "old") && !progress.HasConfirmedError,
+    "одного распознавания ошибки недостаточно для fallback");
+Check(!progress.Observe(old, "old") && !progress.HasConfirmedError &&
+    !progress.Observe(staleError, "old") && !progress.HasConfirmedError &&
+    !progress.Observe(staleError, "old") && progress.HasConfirmedError,
+    "новая ошибка подтверждается только последовательными наблюдениями");
+progress = new ToolkitExecutionProgress(staleError, "old", 2);
+Check(!progress.Observe(old with { Busy = true }, "old") &&
+    !progress.Observe(staleError, "old") && !progress.HasConfirmedError &&
+    !progress.Observe(staleError, "old") && progress.HasConfirmedError,
+    "повтор той же ошибки подтверждается после её исчезновения в текущем запуске");
+progress = new ToolkitExecutionProgress(old, "old", 2);
+Check(!progress.Observe(staleError with { Busy = true }, "old") && !progress.HasConfirmedError &&
+    !progress.Observe(staleError, "old") && !progress.HasConfirmedError,
+    "сообщение во время выполнения не учитывается для подтверждения ошибки");
 using (var cancellation = new CancellationTokenSource())
 {
     cancellation.Cancel();
@@ -201,7 +224,7 @@ var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../
 var yaml = File.ReadAllText(Path.Combine(root, "Examples/ScenarioReference.example.yaml"));
 var definition = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build()
     .Deserialize<ScenarioDefinition>(yaml);
-Check(definition.Steps.Count == 4 && definition.Steps[0].Type == "Open1C" &&
+Check(definition.Steps.Count == 5 && definition.Steps[0].Type == "Open1C" &&
     definition.Steps[3].Type == "ExecuteToolkitQuery" && definition.Steps[3].ScrollNotches == 2,
     "пример YAML десериализуется с параметрами шага");
 Check(definition.Steps[3].QueryInputMode == "typing", "справочник использует набор по умолчанию");
@@ -216,18 +239,58 @@ Check(!string.IsNullOrWhiteSpace(definition.Steps[0].Executable) &&
 var scenarioDeserializer = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
 var minimalStep = scenarioDeserializer.Deserialize<ScenarioStepDefinition>("type: Open1C\n");
 Check(minimalStep.AfterActivationDelayMs == 1000 && minimalStep.AfterRunDialogDelayMs == 500 &&
-    minimalStep.WindowSwitchDelayMs == 700 && minimalStep.PollIntervalMs == 500 && minimalStep.ScrollPauseMs == 700 &&
-    minimalStep.ReadyTimeoutSeconds == 60 && minimalStep.SectionOpenTimeoutSeconds == 5 && minimalStep.CommandTimeoutSeconds == 15 &&
+    minimalStep.WindowSwitchDelayMs == 700 && minimalStep.PollIntervalMs == 30000 && minimalStep.ScrollPauseMs == 700 &&
+    minimalStep.ReadyTimeoutSeconds == 420 && minimalStep.SectionOpenTimeoutSeconds == 5 && minimalStep.CommandTimeoutSeconds == 15 &&
     minimalStep.ConsoleTimeoutSeconds == 30 && minimalStep.QueryInputTimeoutSeconds == 20 &&
-    minimalStep.QueryTimeoutSeconds == 120 && minimalStep.ScrollTimeoutSeconds == 50,
+    minimalStep.QueryTimeoutSeconds == 120 && minimalStep.ScrollTimeoutSeconds == 300,
     "YAML без параметров времени получает задержки и таймауты из кода");
+Check(new[] { "Open1CCommand", "ExecuteToolkitQuery" }.All(type =>
+    scenarioDeserializer.Deserialize<ScenarioStepDefinition>($"type: {type}\n").PollIntervalMs == 500),
+    "остальные шаги сохраняют интервал проверки 500 мс");
+Check(scenarioDeserializer.Deserialize<ScenarioStepDefinition>(
+    "pollIntervalMs: 250\nreadyTimeoutSeconds: 90\ntype: open1c\n").PollIntervalMs == 250 &&
+    scenarioDeserializer.Deserialize<ScenarioStepDefinition>("type: Open1C\nreadyTimeoutSeconds: 90\n").ReadyTimeoutSeconds == 90,
+    "явные настройки Open1C переопределяют defaults независимо от порядка полей YAML");
+Check(definition.Steps[0].ReadyTimeoutSeconds == 420 && definition.Steps[0].PollIntervalMs == 30000,
+    "пример Open1C ожидает запуск 7 минут с проверкой каждые 30 секунд");
 var overriddenStep = scenarioDeserializer.Deserialize<ScenarioStepDefinition>(
     "type: Open1C\nafterActivationDelayMs: 0\nafterRunDialogDelayMs: 123\npollIntervalMs: 250\nscrollTimeoutSeconds: 180\n");
 Check(overriddenStep.AfterActivationDelayMs == 0 && overriddenStep.AfterRunDialogDelayMs == 123 &&
     overriddenStep.PollIntervalMs == 250 && overriddenStep.ScrollTimeoutSeconds == 180,
     "явные параметры времени переопределяют значения по умолчанию, включая нулевую паузу");
 Check(definition.Steps.Select(step => step.Type).SequenceEqual(
-    new[] { "Open1C", "Open1CSection", "Open1CCommand", "ExecuteToolkitQuery" }), "справочник содержит все типы шагов");
+    new[] { "Open1C", "Open1CSection", "Open1CCommand", "ExecuteToolkitQuery", "Wait" }), "справочник содержит все типы шагов");
+var stepFactory = new ScenarioStepFactory(null!, null!, null!, null!, null!);
+Check(definition.Steps[4].Seconds == 5 && stepFactory.Create(definition.Steps[4]) is WaitStep,
+    "пример Wait десериализуется и создаётся фабрикой");
+var waitDefinition = scenarioDeserializer.Deserialize<ScenarioStepDefinition>("type: wait\nseconds: 1\n");
+var waitStep = stepFactory.Create(waitDefinition);
+Check(waitStep is WaitStep, "фабрика распознаёт Wait без учёта регистра");
+var waitTimer = System.Diagnostics.Stopwatch.StartNew();
+var waitTask = waitStep.ExecuteAsync();
+Check(!waitTask.IsCompleted, "Wait ожидает асинхронно");
+await waitTask;
+Check(waitTimer.Elapsed >= TimeSpan.FromSeconds(1), "Wait ожидает указанное число секунд");
+foreach (var invalidSeconds in new[] { 0, -1 })
+{
+    try
+    {
+        await stepFactory.Create(new ScenarioStepDefinition { Type = "Wait", Seconds = invalidSeconds }).ExecuteAsync();
+        throw new Exception("Неположительное время ожидания принято");
+    }
+    catch (InvalidOperationException error) when (error.Message.Contains("seconds"))
+    { Console.WriteLine("PASS: неположительное или отсутствующее seconds отклонено"); }
+}
+using (var waitCancellation = new CancellationTokenSource())
+{
+    var pendingWait = stepFactory.Create(new ScenarioStepDefinition { Type = "Wait", Seconds = 60 })
+        .ExecuteAsync(waitCancellation.Token);
+    waitCancellation.Cancel();
+    try { await pendingWait; throw new Exception("Отмена Wait потеряна"); }
+    catch (OperationCanceledException) { Console.WriteLine("PASS: ожидание Wait прерывается отменой"); }
+    try { await waitStep.ExecuteAsync(waitCancellation.Token); throw new Exception("Предварительная отмена Wait потеряна"); }
+    catch (OperationCanceledException) { Console.WriteLine("PASS: Wait поддерживает отмену до начала ожидания"); }
+}
 Check(new ScenarioStepDefinition().QueryInputMode == "typing", "старые сценарии сохраняют клавиатурный ввод");
 var invalidInputMode = new ExecuteToolkitQueryStep(new ScenarioStepDefinition
     { QueryFile = definition.Steps[3].QueryFile, QueryInputMode = "invalid" },

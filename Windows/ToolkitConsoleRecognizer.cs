@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using System.Drawing.Imaging;
 using System.Security.Cryptography;
+using System.Drawing.Drawing2D;
 
 namespace ShowroomBot.Windows;
 
@@ -14,7 +15,49 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
     {
         var labels = await ocr.ReadLinesAsync(path, token);
         using var image = new Bitmap(path);
-        return Analyze(image, labels, token);
+        var layout = Analyze(image, labels, token);
+        if (layout.Execute == null && layout.TextTab is Rectangle text)
+        {
+            // Full-screen OCR can omit small toolbar labels among dense query/table text.
+            // Retry only the toolbar, keeping all returned coordinates in the original image.
+            var region = Rectangle.FromLTRB(0, Math.Max(0, text.Top - text.Height * 8),
+                Math.Min(image.Width, text.Right + text.Height * 12), text.Top);
+            if (region.Height > 0)
+            {
+                using var crop = new Bitmap(region.Width * 2, region.Height * 2);
+                using (var graphics = Graphics.FromImage(crop))
+                {
+                    graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    graphics.DrawImage(image, new Rectangle(0, 0, crop.Width, crop.Height), region, GraphicsUnit.Pixel);
+                }
+                var cropPath = Path.ChangeExtension(path, ".toolkit-toolbar.png");
+                crop.Save(cropPath, ImageFormat.Png);
+                var toolbar = await ocr.ReadLinesAsync(cropPath, token);
+                labels = labels.Concat(toolbar.Select(l => l with { Bounds = Rectangle.FromLTRB(
+                    region.Left + l.Bounds.Left / 2, region.Top + l.Bounds.Top / 2,
+                    region.Left + (l.Bounds.Right + 1) / 2, region.Top + (l.Bounds.Bottom + 1) / 2) })).ToArray();
+                layout = Analyze(image, labels, token);
+            }
+        }
+        if (layout.RowCount == 0 && layout.Result != null)
+        {
+            var heading = labels.First(l => Regex.IsMatch(l.Text, @"Результат\s*\(", RegexOptions.IgnoreCase));
+            var region = Rectangle.Intersect(new Rectangle(heading.Bounds.Left - 4, heading.Bounds.Top - 4,
+                heading.Bounds.Width + 8, heading.Bounds.Height + 8), new Rectangle(Point.Empty, image.Size));
+            using var crop = new Bitmap(region.Width * 2, region.Height * 2);
+            using (var graphics = Graphics.FromImage(crop))
+            {
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.DrawImage(image, new Rectangle(0, 0, crop.Width, crop.Height), region, GraphicsUnit.Pixel);
+            }
+            var cropPath = Path.ChangeExtension(path, ".toolkit-result-heading.png");
+            crop.Save(cropPath, ImageFormat.Png);
+            var headings = await ocr.ReadLinesAsync(cropPath, token);
+            var corrected = headings.Where(l => Regex.IsMatch(l.Text, @"Результат\s*\(", RegexOptions.IgnoreCase))
+                .Select(l => new RecognizedText(l.Text, heading.Bounds)).ToArray();
+            layout = Analyze(image, corrected.Concat(labels).ToArray(), token);
+        }
+        return layout;
     }
 
     public static ToolkitConsoleLayout Analyze(Bitmap image, IReadOnlyList<RecognizedText> labels, CancellationToken token = default)
@@ -30,8 +73,8 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
             .OrderByDescending(l => l.Bounds.Top).FirstOrDefault();
         var heading = labels.FirstOrDefault(l => Regex.IsMatch(l.Text, @"Результат\s*\(", RegexOptions.IgnoreCase));
         int? rows = null;
-        if (heading != null && Regex.Match(heading.Text, @"(\d+)\s*строк", RegexOptions.IgnoreCase) is { Success: true } match)
-            rows = int.Parse(match.Groups[1].Value);
+        if (heading != null && Regex.Match(heading.Text, @"(\d+(?:[ \u00A0\u202F]\d{3})*)\s*строк", RegexOptions.IgnoreCase) is { Success: true } match)
+            rows = int.Parse(Regex.Replace(match.Groups[1].Value, @"\s", ""));
         Rectangle? editor = text == null ? null : FindFrame(image, text.Bounds.Left - text.Bounds.Height,
             text.Bounds.Right, text.Bounds.Bottom, heading?.Bounds.Top ?? image.Height, text.Bounds.Height, token);
         Rectangle? table = heading == null ? null : FindFrame(image, heading.Bounds.Left - heading.Bounds.Height * 3,
