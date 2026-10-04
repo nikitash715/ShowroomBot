@@ -8,7 +8,7 @@ namespace ShowroomBot.Core.Scenarios;
 
 public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, RdpController rdp,
     KeyboardInputSender keyboard, MouseInputSender mouse, WindowScreenshotService screenshots,
-    OneCSectionRecognizer sectionRecognizer, MouseSettings mouseSettings) : IScenarioStep
+    OneCSectionRecognizer sectionRecognizer) : IScenarioStep
 {
     public string Name => $"Выполнить запрос Toolkit: {Path.GetFileNameWithoutExtension(definition.QueryFile)}";
     private readonly ToolkitConsoleRecognizer _recognizer = new(sectionRecognizer);
@@ -40,7 +40,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
                     SectionOpenTimeoutSeconds = definition.SectionOpenTimeoutSeconds,
                     CommandTimeoutSeconds = definition.CommandTimeoutSeconds, PollIntervalMs = definition.PollIntervalMs
                 };
-                await new OpenOneCCommandStep(navigation, rdp, mouse, screenshots, sectionRecognizer, mouseSettings).ExecuteAsync(token);
+                await new OpenOneCCommandStep(navigation, rdp, mouse, screenshots, sectionRecognizer).ExecuteAsync(token);
             }
             layout = await WaitForEditor(token);
             await Click(layout.TextTab!.Value, token);
@@ -53,15 +53,30 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
             if (string.Equals(definition.QueryInputMode, "paste", StringComparison.OrdinalIgnoreCase))
                 await new RdpClipboardQueryInput(keyboard).ReplaceAndVerifyAsync(query, definition.QueryInputTimeoutSeconds, token);
             else
-                await new RdpKeyboardQueryInput(keyboard).ReplaceAsync(query, definition.TypingDelayMs, definition.QueryInputTimeoutSeconds, token);
-            await Move(Center(layout.TextTab!.Value), token);
-            var (beforePath, before) = await Observe(token);
-            if (before.Execute == null)
-                throw new InvalidOperationException("Toolkit: верхняя кнопка «Выполнить» не распознана после ввода запроса.");
-            var baseline = before.Result is Rectangle old ? ToolkitConsoleRecognizer.Fingerprint(beforePath, old) : null;
-            await Click(before.Execute.Value, token);
-            ScenarioExecution.Log($"Toolkit: запуск {definition.QueryFile}; ожидание нового результата");
-            var result = await WaitForResult(before, baseline, token);
+                await new RdpKeyboardQueryInput(keyboard).ReplaceAsync(query, definition.QueryInputTimeoutSeconds, token);
+            ToolkitConsoleLayout result;
+            try
+            {
+                result = await ExecuteQuery(layout, token);
+            }
+            catch (ToolkitQueryExecutionException exception) when (
+                string.Equals(definition.QueryInputMode, "typing", StringComparison.OrdinalIgnoreCase))
+            {
+                token.ThrowIfCancellationRequested();
+                ScenarioExecution.Log($"Toolkit: после typing получена ошибка: {exception.Message}; очищаем редактор и повторяем через paste.");
+                layout = await WaitForEditor(token);
+                await Click(layout.TextTab!.Value, token);
+                layout = await WaitForEditor(token);
+                await Click(layout.Editor!.Value, token);
+                await Task.Delay(200, token);
+                await keyboard.SendControlShortcutAsync(0x1E, token); // Ctrl+A
+                await keyboard.SendKeyAsync(0x08, token); // Backspace
+                await Task.Delay(150, token);
+                await new RdpClipboardQueryInput(keyboard).ReplaceAndVerifyAsync(query,
+                    definition.QueryInputTimeoutSeconds, token);
+                // One retry only; a query error after paste is propagated normally.
+                result = await ExecuteQuery(layout, token);
+            }
             if (result.RowCount == 0)
             {
                 ScenarioExecution.Log("Toolkit: запрос выполнен успешно, результат пуст.");
@@ -78,13 +93,28 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         }
     }
 
+    private sealed class ToolkitQueryExecutionException(string message) : InvalidOperationException(message);
+
+    private async Task<ToolkitConsoleLayout> ExecuteQuery(ToolkitConsoleLayout layout, CancellationToken token)
+    {
+        await Move(Center(layout.TextTab!.Value), token);
+        var (beforePath, before) = await Observe(token);
+        if (before.Execute == null)
+            throw new InvalidOperationException("Toolkit: верхняя кнопка «Выполнить» не распознана после ввода запроса.");
+        var baseline = before.Result is Rectangle old ? ToolkitConsoleRecognizer.Fingerprint(beforePath, old) : null;
+        await Click(before.Execute.Value, token);
+        ScenarioExecution.Log($"Toolkit: запуск {definition.QueryFile}; ожидание нового результата");
+        return await WaitForResult(before, baseline, token);
+    }
+
     private async Task<string> ReadQueryAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(definition.QueryFile))
             throw new InvalidOperationException("ExecuteToolkitQuery: задайте queryFile.");
         var path = Path.GetFullPath(definition.QueryFile, AppContext.BaseDirectory);
-        if (!File.Exists(path)) throw new FileNotFoundException("Toolkit: файл запроса не найден.", path);
+        if (!File.Exists(path)) throw new FileNotFoundException(
+            $"Toolkit: файл запроса не найден: {path}. Относительный queryFile разрешается от каталога программы: {AppContext.BaseDirectory}", path);
         var query = await File.ReadAllTextAsync(path, new UTF8Encoding(false, true), token);
         if (string.IsNullOrWhiteSpace(query)) throw new InvalidDataException($"Toolkit: файл запроса пуст: {path}");
         return query.TrimEnd('\r', '\n');
@@ -98,7 +128,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         if (definition.ConsoleTimeoutSeconds <= 0 || definition.QueryInputTimeoutSeconds <= 0 || definition.QueryTimeoutSeconds <= 0 ||
             definition.ScrollTimeoutSeconds <= 0 || definition.ScrollPauseMs <= 0 || definition.ScrollNotches is < 1 or > 10 ||
             definition.MaxScrollAttempts <= 0 || definition.ScrollUnchangedAttempts < 2 ||
-            definition.ResultStablePolls < 2 || definition.PollIntervalMs <= 0 || definition.TypingDelayMs < 0)
+            definition.ResultStablePolls < 2 || definition.PollIntervalMs <= 0)
             throw new InvalidOperationException("Toolkit: таймауты, паузы и лимиты должны быть положительными; scrollNotches — 1..10; stable/unchanged — минимум 2.");
     }
 
@@ -144,7 +174,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
                         await Task.Delay(definition.PollIntervalMs, timeout.Token);
                         continue;
                     }
-                    throw new InvalidOperationException($"Toolkit: ошибка запроса: {layout.Error}");
+                    throw new ToolkitQueryExecutionException($"Toolkit: ошибка запроса: {layout.Error}");
                 }
                 var fingerprint = layout.Result is Rectangle area ? ToolkitConsoleRecognizer.Fingerprint(path, area) : null;
                 if (progress.Observe(layout, fingerprint)) return layout;
@@ -236,8 +266,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
     private static Point Center(Rectangle region) => new(region.Left + region.Width / 2, region.Top + region.Height / 2);
     private async Task Move(Point point, CancellationToken token) => await mouse.MoveToAsync(
         screenshots.ClientToScreen(Activate(token), point),
-        TimeSpan.FromMilliseconds(Math.Max(100, mouseSettings.MovementDurationMilliseconds)),
-        TimeSpan.FromMilliseconds(Math.Max(5, mouseSettings.StepDelayMilliseconds)), token);
+        token);
     private async Task Click(Rectangle region, CancellationToken token)
     {
         await Move(Center(region), token);

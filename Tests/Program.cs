@@ -3,11 +3,71 @@ using ShowroomBot.Core.Scenarios;
 using ShowroomBot.Windows;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using ShowroomBot.Configuration;
 
 static void Check(bool value, string message)
 {
     if (!value) throw new Exception(message);
     Console.WriteLine($"PASS: {message}");
+}
+
+var typingSettings = new TypingSettings();
+var tempo = new TypingTempo(typingSettings, new Random(42));
+var delays = Enumerable.Range(0, 10000).Select(_ => tempo.NextDelay()).ToArray();
+Check(delays.Min() >= 80 && delays.Distinct().Count() > 100 && delays.Any(d => d >= 880),
+    "темп меняется, не превышает прежнюю скорость и содержит редкие паузы");
+foreach (var target in new[] { new Point(1000, 600), new Point(-500, -300), new Point(0, 0) })
+{
+    var path = new MouseTrajectory(Point.Empty, target, new MouseSettings(), new Random(42));
+    Check(path.At(0) == Point.Empty && path.At(1) == target, "траектория точно достигает цели, включая отрицательные координаты");
+}
+using (var cancelled = new CancellationTokenSource())
+{
+    cancelled.Cancel();
+    try { await new KeyboardInputSender().SendTextAsync("не отправлять", cancelled.Token); throw new Exception("Отмена текста потеряна"); }
+    catch (OperationCanceledException) { Console.WriteLine("PASS: отмена до отправки текста"); }
+    try { await new MouseInputSender().MoveToAsync(new Point(10, 10), cancelled.Token); throw new Exception("Отмена мыши потеряна"); }
+    catch (OperationCanceledException) { Console.WriteLine("PASS: отмена до перемещения мыши"); }
+}
+var configPath = Path.GetTempFileName();
+try
+{
+    var source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.yaml"));
+    File.WriteAllText(configPath, source);
+    var service = new SettingsService(configPath);
+    var settings = service.Load();
+    service.Save(settings);
+    Check(File.ReadAllText(configPath) == source, "сохранение без изменений сохраняет конфиг побайтно с комментариями");
+    settings.IdleMinutes++;
+    service.Save(settings);
+    Check(service.Load().IdleMinutes == settings.IdleMinutes && File.ReadAllText(configPath).Contains("# Общие настройки"),
+        "изменение настройки сохраняет комментарии и корректный YAML");
+    File.WriteAllText(configPath, "# заголовок\nidleMinutes: 17 # inline\nautomation:\n  mouse:\n    movementDurationMilliseconds: 410 # длительность\n    stepDelayMilliseconds: 12\nunknown: 'keep' # сохранить\n");
+    var migrated = service.Load();
+    service.Save(migrated);
+    var saved = File.ReadAllText(configPath);
+    Check(service.Load().Automation.Typing.MinimumDelayMilliseconds == 80 && saved.Contains("# inline") &&
+        saved.Contains("unknown: 'keep' # сохранить") && service.Load().Automation.Mouse.MovementDurationMilliseconds == 410,
+        "добавление отсутствующих параметров сохраняет комментарии, неизвестные ключи и значения");
+    File.WriteAllText(configPath, "vpn:\n  connectionNames:\n    - 'one' # первая\n    # заметка\n    - 'two' # вторая\nidleMinutes: 17 # конец\n");
+    var names = service.Load();
+    names.Vpn.ConnectionNames = ["changed, with comma", "two # name", "three"];
+    service.Save(names);
+    Check(service.Load().Vpn.ConnectionNames.SequenceEqual(names.Vpn.ConnectionNames) &&
+        new[] { "первая", "заметка", "вторая", "конец" }.All(c => File.ReadAllText(configPath).Contains(c)),
+        "изменение размера списка сохраняет все комментарии и значения");
+    File.WriteAllText(configPath, "invalid: [\n");
+    try { service.Load(); throw new Exception("Повреждённый YAML принят"); }
+    catch (InvalidDataException) { Check(File.ReadAllText(configPath) == "invalid: [\n", "ошибка чтения не перезаписывает настройки"); }
+}
+finally { File.Delete(configPath); }
+using (var execution = new ScenarioExecution(CancellationToken.None))
+{
+    ScenarioExecution.CancelCurrent();
+    try { await new KeyboardInputSender().SendTextAsync("не отправлять"); throw new Exception("Аварийная остановка текста потеряна"); }
+    catch (OperationCanceledException) { Console.WriteLine("PASS: аварийная остановка общего набора"); }
+    try { await new MouseInputSender().MoveToAsync(new Point(1, 1)); throw new Exception("Аварийная остановка мыши потеряна"); }
+    catch (OperationCanceledException) { Console.WriteLine("PASS: аварийная остановка общего движения мыши"); }
 }
 
 // Inspect packets without sending any keys to the active window.
@@ -58,6 +118,15 @@ foreach (var (scale, offset) in new[] { (1, 0), (2, 40) })
     var errorLayout = ToolkitConsoleRecognizer.Analyze(image, errorLabels);
     Check(errorLayout.Editor.HasValue && errorLayout.Execute == labels[2].Bounds && errorLayout.Error != null,
         "красная рамка, ошибка синтаксиса и OCR Tolkit не теряют кнопку Выполнить");
+    foreach (var message in new[] { "(2, 5) Таблица не найдена РаспределениеЗапасов", "(2_ 5) Таблица не найдена РаспределениеЗапасов", "Поле не найдено Номенклатура", "Параметр не найден Склад" })
+    {
+        var missingTable = ToolkitConsoleRecognizer.Analyze(image, labels.Append(
+            new RecognizedText(message, R(330, 390, 500, 16))).ToArray());
+        Check(missingTable.Error == message, $"ошибка 1С распознана: {message}");
+        var queryText = ToolkitConsoleRecognizer.Analyze(image, labels.Append(
+            new RecognizedText(message, R(330, 200, 500, 16))).ToArray());
+        Check(queryText.Error == null, "текст внутри запроса не принимается за ошибку");
+    }
 }
 var frame = new Rectangle(10, 10, 100, 100);
 Check(RdpClipboardQueryInput.NormalizeNewlines("ВЫБРАТЬ\r\n    Количество\r\nИЗ") == "ВЫБРАТЬ\n    Количество\nИЗ",
@@ -105,21 +174,21 @@ Check(definition.Steps[0].QueryInputMode == "paste", "пример выбира�
 Check(new ScenarioStepDefinition().QueryInputMode == "typing", "старые сценарии сохраняют клавиатурный ввод");
 var invalidInputMode = new ExecuteToolkitQueryStep(new ScenarioStepDefinition
     { QueryFile = definition.Steps[0].QueryFile, QueryInputMode = "invalid" },
-    null!, null!, null!, null!, null!, null!);
+    null!, null!, null!, null!, null!);
 try { await invalidInputMode.ExecuteAsync(); throw new Exception("Неизвестный способ ввода принят"); }
 catch (InvalidOperationException error) when (error.Message.Contains("queryInputMode"))
 { Console.WriteLine("PASS: неизвестный способ ввода отклонён до действий в RDP"); }
 Check(File.Exists(Path.Combine(Path.GetDirectoryName(typeof(ScenarioDefinition).Assembly.Location)!,
     definition.Steps[0].QueryFile)), "запрос скопирован в выходной каталог");
 var missing = new ExecuteToolkitQueryStep(new ScenarioStepDefinition { QueryFile = "missing-query.txt" },
-    null!, null!, null!, null!, null!, null!);
+    null!, null!, null!, null!, null!);
 try { await missing.ExecuteAsync(); throw new Exception("Отсутствующий файл принят"); }
 catch (FileNotFoundException) { Console.WriteLine("PASS: отсутствующий файл отклонён до обращения к RDP"); }
 var emptyFile = Path.GetTempFileName();
 try
 {
     var step = new ExecuteToolkitQueryStep(new ScenarioStepDefinition { QueryFile = emptyFile },
-        null!, null!, null!, null!, null!, null!);
+        null!, null!, null!, null!, null!);
     try { await step.ExecuteAsync(); throw new Exception("Пустой файл принят"); }
     catch (InvalidDataException) { Console.WriteLine("PASS: пустой файл отклонён до обращения к RDP"); }
 }
@@ -145,11 +214,13 @@ try
     Check(ToolkitConsoleRecognizer.ScrollbarAtBottom(bitmapPath, region), "нижнее положение ползунка распознаётся");
 }
 finally { File.Delete(bitmapPath); }
-foreach (var screenshot in args)
+foreach (var screenshot in args.Where(arg => arg != "--expect-query-error"))
 {
     var actual = await new ToolkitConsoleRecognizer(new OneCSectionRecognizer()).RecognizeAsync(screenshot, CancellationToken.None);
     Check(actual.Editor != null && actual.Execute != null,
         $"реальный снимок: редактор {actual.Editor}, Выполнить {actual.Execute}");
+    if (args.Contains("--expect-query-error"))
+        Check(actual.Error != null, $"реальный снимок: ошибка запроса распознана: {actual.Error}");
     if (actual.RowCount > 0)
         Check(actual.Result != null, $"реальный снимок: видимая область результата {actual.Result}");
 }

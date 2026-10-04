@@ -29,10 +29,10 @@ public sealed class RdpTestScenario
         await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
         _keyboardInputSender.SendWindowsRun();
         await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
-        _keyboardInputSender.SendText("powershell");
+        await _keyboardInputSender.SendTextAsync("powershell", cancellationToken);
         _keyboardInputSender.SendEnter();
         await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
-        _keyboardInputSender.SendText("Write-Host \"SHOWROOMBOT TEST OK\"");
+        await _keyboardInputSender.SendTextAsync("Write-Host \"SHOWROOMBOT TEST OK\"", cancellationToken);
         _keyboardInputSender.SendEnter();
         await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
 

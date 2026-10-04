@@ -1,4 +1,4 @@
-﻿using ShowroomBot.Configuration;
+using ShowroomBot.Configuration;
 using ShowroomBot.Core;
 using ShowroomBot.Core.Scenarios;
 using ShowroomBot.Rdp;
@@ -38,10 +38,9 @@ internal static class Program
         var vpnDetector = new VpnDetector();
         var rdpAvailabilityChecker = new RdpAvailabilityChecker();
         var rdpController = new RdpController();
-        var keyboardInputSender = new KeyboardInputSender();
+        var keyboardInputSender = new KeyboardInputSender(settings.Automation.Typing);
         var scenarioStepFactory = new ScenarioStepFactory(rdpController, keyboardInputSender,
-            new MouseInputSender(), new WindowScreenshotService(), new OneCSectionRecognizer(),
-            settings.Automation.Mouse);
+            new MouseInputSender(settings.Automation.Mouse), new WindowScreenshotService(), new OneCSectionRecognizer());
         var scenarioRunner = new ScenarioRunner(scenarioStepFactory);
         var demoScenario = new DemoScenario(scenarioRunner);
         var demoController = new DemoController();

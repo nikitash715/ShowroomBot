@@ -12,18 +12,16 @@ public sealed class OpenOneCCommandStep : IScenarioStep
     private readonly MouseInputSender _mouse;
     private readonly WindowScreenshotService _screenshots;
     private readonly OneCSectionRecognizer _recognizer;
-    private readonly MouseSettings _mouseSettings;
 
     public OpenOneCCommandStep(ScenarioStepDefinition definition, RdpController rdp,
         MouseInputSender mouse, WindowScreenshotService screenshots,
-        OneCSectionRecognizer recognizer, MouseSettings mouseSettings)
+        OneCSectionRecognizer recognizer)
     {
         _definition = definition;
         _rdp = rdp;
         _mouse = mouse;
         _screenshots = screenshots;
         _recognizer = recognizer;
-        _mouseSettings = mouseSettings;
     }
 
     public string Name => $"Открыть команду 1С: {_definition.Command}";
@@ -38,7 +36,7 @@ public sealed class OpenOneCCommandStep : IScenarioStep
             throw new InvalidOperationException("Open1CCommand: sectionOpenTimeoutSeconds должен быть 1..5; commandTimeoutSeconds и pollIntervalMs — положительными.");
 
         // The existing navigation always clicks the recognized section, including an already open one.
-        var sectionStep = new OpenOneCSectionStep(_definition, _rdp, _mouse, _screenshots, _recognizer, _mouseSettings);
+        var sectionStep = new OpenOneCSectionStep(_definition, _rdp, _mouse, _screenshots, _recognizer);
         await sectionStep.ExecuteAsync(cancellationToken);
 
         var directory = ScenarioExecution.Current?.DirectoryPath ?? Path.Combine(AppContext.BaseDirectory, "diagnostics",
@@ -68,12 +66,7 @@ public sealed class OpenOneCCommandStep : IScenarioStep
                             throw new InvalidOperationException("Команда выходит за границы рабочей области; клик отменён.");
                         ScenarioExecution.Log($"Команда найдена: {_definition.Command}; затрачено {timer.Elapsed.TotalSeconds:F3} с");
                         var point = new Point(text.Left + text.Width / 2, text.Top + text.Height / 2);
-                        var delay = _mouseSettings.StepDelayMilliseconds > 0 ? _mouseSettings.StepDelayMilliseconds : 10;
-                        var duration = _mouseSettings.MovementDurationMilliseconds > 0
-                            ? _mouseSettings.MovementDurationMilliseconds : 300;
-                        await _mouse.MoveToAsync(_screenshots.ClientToScreen(Activate(searchToken), point),
-                            TimeSpan.FromMilliseconds(Math.Max(duration, delay * 2L)),
-                            TimeSpan.FromMilliseconds(delay), searchToken);
+                        await _mouse.MoveToAsync(_screenshots.ClientToScreen(Activate(searchToken), point), searchToken);
                         searchToken.ThrowIfCancellationRequested();
                         _mouse.ClickLeft();
                         ScenarioExecution.Log($"Клик по команде: {_definition.Command}");

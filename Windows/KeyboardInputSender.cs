@@ -1,3 +1,4 @@
+using ShowroomBot.Configuration;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using ShowroomBot.Core.Scenarios;
@@ -116,37 +117,28 @@ public sealed class KeyboardInputSender
         }
     }
 
-    public void SendText(string text)
+    private readonly TypingSettings _typing;
+    private readonly TypingTempo _tempo;
+    public KeyboardInputSender(TypingSettings? settings = null)
     {
-        var inputs = new List<NativeMethods.INPUT>(text.Length * 2);
+        _typing = settings ?? new();
+        _tempo = new TypingTempo(_typing);
+    }
+    public long MaximumTextDurationMilliseconds(long characters) =>
+        checked((long)Math.Ceiling(characters * (_typing.MinimumDelayMilliseconds * _typing.SlowdownFactor +
+            _typing.JitterMilliseconds + _typing.PauseMaximumMilliseconds + 20)));
+    public async Task SendTextAsync(string text, CancellationToken cancellationToken = default)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,
+            ScenarioExecution.Current?.Token ?? CancellationToken.None);
+        var token = linked.Token;
         foreach (var character in text)
         {
-            inputs.Add(CreateUnicodeInput(character, keyUp: false));
-            inputs.Add(CreateUnicodeInput(character, keyUp: true));
-        }
-
-        SendInputs(inputs.ToArray());
-    }
-
-    public async Task SendTextAsync(
-        string text,
-        TimeSpan characterDelay,
-        CancellationToken cancellationToken = default)
-    {
-        foreach (var character in text)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            SendInputs(
-                CreateUnicodeInput(character, keyUp: false),
-                CreateUnicodeInput(character, keyUp: true));
-
-            if (characterDelay > TimeSpan.Zero)
-            {
-                await Task.Delay(characterDelay, cancellationToken);
-            }
+            token.ThrowIfCancellationRequested();
+            SendInputs(CreateUnicodeInput(character, false), CreateUnicodeInput(character, true));
+            await Task.Delay(TimeSpan.FromMilliseconds(_tempo.NextDelay()), token);
         }
     }
-
     private static NativeMethods.INPUT CreateVirtualKeyInput(ushort virtualKey, bool keyUp)
     {
         // RDP needs physical scan codes for navigation. A VK-only Home/End

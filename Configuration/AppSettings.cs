@@ -1,4 +1,4 @@
-﻿namespace ShowroomBot.Configuration;
+namespace ShowroomBot.Configuration;
 
 public sealed class AppSettings
 {
@@ -27,10 +27,25 @@ public sealed class RdpSettings
 public sealed class AutomationSettings
 {
     public MouseSettings Mouse { get; set; } = new();
+    public TypingSettings Typing { get; set; } = new();
 }
 
 public sealed class MouseSettings
 {
-    public int MovementDurationMilliseconds { get; set; }
-    public int StepDelayMilliseconds { get; set; }
+    public int MovementDurationMilliseconds { get; set; } = 300;
+    public int StepDelayMilliseconds { get; set; } = 10;
+    public double CurvatureRatio { get; set; } = 0.08;
+    public double DeviationPixels { get; set; } = 2;
+    public double DurationVariation { get; set; } = 0.25;
+}
+
+public sealed class TypingSettings
+{
+    public int MinimumDelayMilliseconds { get; set; } = 80;
+    public double SlowdownFactor { get; set; } = 2;
+    public int TempoSegmentCharacters { get; set; } = 24;
+    public int JitterMilliseconds { get; set; } = 15;
+    public double PauseProbability { get; set; } = 0.008;
+    public int PauseMinimumMilliseconds { get; set; } = 800;
+    public int PauseMaximumMilliseconds { get; set; } = 1200;
 }

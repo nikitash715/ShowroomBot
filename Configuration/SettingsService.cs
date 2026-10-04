@@ -16,7 +16,8 @@ public sealed class SettingsService
         .IgnoreUnmatchedProperties()
         .Build();
 
-    public string SettingsPath { get; } = Path.Combine(AppContext.BaseDirectory, FileName);
+    public string SettingsPath { get; }
+    public SettingsService(string? path = null) => SettingsPath = path ?? Path.Combine(AppContext.BaseDirectory, FileName);
 
     public AppSettings Load()
     {
@@ -34,13 +35,12 @@ public sealed class SettingsService
             var yaml = File.ReadAllText(SettingsPath);
             settings = Deserializer.Deserialize<AppSettings>(yaml) ?? new AppSettings();
         }
-        catch
+        catch (Exception error)
         {
-            settings = new AppSettings();
+            throw new InvalidDataException($"Не удалось прочитать настройки {SettingsPath}; файл сохранён без изменений.", error);
         }
 
         Normalize(settings);
-        Save(settings);
         return settings;
     }
 
@@ -48,6 +48,7 @@ public sealed class SettingsService
     {
         Normalize(settings);
         var yaml = Serializer.Serialize(settings);
+        if (File.Exists(SettingsPath)) yaml = CommentedYaml.Update(File.ReadAllText(SettingsPath), yaml);
         File.WriteAllText(SettingsPath, yaml);
     }
 
@@ -64,6 +65,7 @@ public sealed class SettingsService
         settings.Rdp ??= new RdpSettings();
         settings.Automation ??= new AutomationSettings();
         settings.Automation.Mouse ??= new MouseSettings();
+        settings.Automation.Typing ??= new TypingSettings();
 
         var defaultVpnSettings = new VpnSettings();
         if (settings.Vpn.ConnectionNames.Length == 0)
@@ -103,8 +105,20 @@ public sealed class SettingsService
         }
 
         settings.Automation.Mouse.MovementDurationMilliseconds =
-            Math.Max(0, settings.Automation.Mouse.MovementDurationMilliseconds);
+            Math.Max(1, settings.Automation.Mouse.MovementDurationMilliseconds);
         settings.Automation.Mouse.StepDelayMilliseconds =
-            Math.Max(0, settings.Automation.Mouse.StepDelayMilliseconds);
+            Math.Max(1, settings.Automation.Mouse.StepDelayMilliseconds);
+        var mouse = settings.Automation.Mouse;
+        mouse.CurvatureRatio = double.IsFinite(mouse.CurvatureRatio) ? Math.Clamp(mouse.CurvatureRatio, 0, 0.2) : 0.08;
+        mouse.DeviationPixels = double.IsFinite(mouse.DeviationPixels) ? Math.Clamp(mouse.DeviationPixels, 0, 10) : 2;
+        mouse.DurationVariation = double.IsFinite(mouse.DurationVariation) ? Math.Clamp(mouse.DurationVariation, 0, 0.9) : 0.25;
+        var typing = settings.Automation.Typing;
+        typing.MinimumDelayMilliseconds = Math.Max(1, typing.MinimumDelayMilliseconds);
+        typing.SlowdownFactor = double.IsFinite(typing.SlowdownFactor) ? Math.Clamp(typing.SlowdownFactor, 1, 10) : 2;
+        typing.TempoSegmentCharacters = Math.Max(2, typing.TempoSegmentCharacters);
+        typing.JitterMilliseconds = Math.Max(0, typing.JitterMilliseconds);
+        typing.PauseProbability = double.IsFinite(typing.PauseProbability) ? Math.Clamp(typing.PauseProbability, 0, 1) : 0.008;
+        typing.PauseMinimumMilliseconds = Math.Max(0, typing.PauseMinimumMilliseconds);
+        typing.PauseMaximumMilliseconds = Math.Max(typing.PauseMinimumMilliseconds, typing.PauseMaximumMilliseconds);
     }
 }

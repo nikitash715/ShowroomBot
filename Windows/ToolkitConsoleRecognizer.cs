@@ -44,6 +44,7 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
              l.Text.Contains("Ошибка при выполнении", StringComparison.OrdinalIgnoreCase) ||
              l.Text.Contains("Ошибка запроса", StringComparison.OrdinalIgnoreCase) ||
              l.Text.Contains("Синтаксическая ошибка", StringComparison.OrdinalIgnoreCase) ||
+             Regex.IsMatch(l.Text, @"\b(Таблица|Поле|Параметр|Функция)\s+не\s+найден[ао]?\b", RegexOptions.IgnoreCase) ||
              Regex.IsMatch(l.Text, @"\(?\d+(?:\s*,\s*\d+)?\)?\s*Ожидается", RegexOptions.IgnoreCase) ||
              l.Text.Trim().Equals("Ошибка", StringComparison.OrdinalIgnoreCase)))?.Text;
         var busy = labels.Any(l => (editor == null || !editor.Value.IntersectsWith(l.Bounds)) &&

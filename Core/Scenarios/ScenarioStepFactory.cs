@@ -11,40 +11,37 @@ public sealed class ScenarioStepFactory
     private readonly MouseInputSender _mouseInputSender;
     private readonly WindowScreenshotService _screenshots;
     private readonly OneCSectionRecognizer _sectionRecognizer;
-    private readonly MouseSettings _mouseSettings;
 
     public ScenarioStepFactory(
         RdpController rdpController,
         KeyboardInputSender keyboardInputSender,
         MouseInputSender mouseInputSender,
         WindowScreenshotService screenshots,
-        OneCSectionRecognizer sectionRecognizer,
-        MouseSettings mouseSettings)
+        OneCSectionRecognizer sectionRecognizer)
     {
         _rdpController = rdpController;
         _keyboardInputSender = keyboardInputSender;
         _mouseInputSender = mouseInputSender;
         _screenshots = screenshots;
         _sectionRecognizer = sectionRecognizer;
-        _mouseSettings = mouseSettings;
     }
 
     public IScenarioStep Create(ScenarioStepDefinition definition)
     {
         if (definition.Type.Equals("ExecuteToolkitQuery", StringComparison.OrdinalIgnoreCase))
             return new ExecuteToolkitQueryStep(definition, _rdpController, _keyboardInputSender,
-                _mouseInputSender, _screenshots, _sectionRecognizer, _mouseSettings);
+                _mouseInputSender, _screenshots, _sectionRecognizer);
 
         if (definition.Type.Equals("Open1CCommand", StringComparison.OrdinalIgnoreCase))
         {
             return new OpenOneCCommandStep(definition, _rdpController, _mouseInputSender,
-                _screenshots, _sectionRecognizer, _mouseSettings);
+                _screenshots, _sectionRecognizer);
         }
 
         if (definition.Type.Equals("Open1CSection", StringComparison.OrdinalIgnoreCase))
         {
             return new OpenOneCSectionStep(definition, _rdpController, _mouseInputSender,
-                _screenshots, _sectionRecognizer, _mouseSettings);
+                _screenshots, _sectionRecognizer);
         }
 
         if (definition.Type.Equals("Open1C", StringComparison.OrdinalIgnoreCase))

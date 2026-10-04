@@ -65,7 +65,6 @@ public sealed class OpenOneCBaseStep : IScenarioStep
 
         await _keyboardInputSender.SendTextAsync(
             BuildCommand(),
-            TimeSpan.FromMilliseconds(Math.Max(0, _definition.TypingDelayMs)),
             cancellationToken);
         _keyboardInputSender.SendEnter();
         ScenarioExecution.Log("Open1C: launched new; команда запуска отправлена, ожидаем подтверждение интерфейса");

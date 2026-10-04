@@ -13,20 +13,18 @@ public sealed class OpenOneCSectionStep : IScenarioStep
     private readonly MouseInputSender _mouse;
     private readonly WindowScreenshotService _screenshots;
     private readonly OneCSectionRecognizer _recognizer;
-    private readonly MouseSettings _mouseSettings;
     private readonly Stopwatch _searchTimer = new();
     public string? BeforeClickScreenshotPath { get; private set; }
 
     public OpenOneCSectionStep(ScenarioStepDefinition definition, RdpController rdp,
         MouseInputSender mouse, WindowScreenshotService screenshots,
-        OneCSectionRecognizer recognizer, MouseSettings mouseSettings)
+        OneCSectionRecognizer recognizer)
     {
         _definition = definition;
         _rdp = rdp;
         _mouse = mouse;
         _screenshots = screenshots;
         _recognizer = recognizer;
-        _mouseSettings = mouseSettings;
     }
 
     public string Name => "Открыть раздел 1С";
@@ -96,12 +94,7 @@ public sealed class OpenOneCSectionStep : IScenarioStep
     {
         cancellationToken.ThrowIfCancellationRequested();
         var screenPoint = _screenshots.ClientToScreen(Activate(), clientPoint);
-        var stepDelay = _mouseSettings.StepDelayMilliseconds > 0 ? _mouseSettings.StepDelayMilliseconds : 10;
-        var duration = _mouseSettings.MovementDurationMilliseconds > 0
-            ? _mouseSettings.MovementDurationMilliseconds : 300;
-        await _mouse.MoveToAsync(screenPoint,
-            TimeSpan.FromMilliseconds(Math.Max(duration, stepDelay * 2L)),
-            TimeSpan.FromMilliseconds(stepDelay), cancellationToken);
+        await _mouse.MoveToAsync(screenPoint, cancellationToken);
     }
 
     private async Task<bool> TryClickAsync(string path, SectionRecognition result, CancellationToken cancellationToken)

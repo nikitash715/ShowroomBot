@@ -9,7 +9,6 @@ steps:
     database: 'example_database'
     user: 'example_user'
     password: '' # Заполните только в локальной копии, если пароль необходим.
-    typingDelayMs: 80
     afterActivationDelayMs: 1000
     afterRunDialogDelayMs: 500
     reuseExistingWindow: true

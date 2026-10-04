@@ -1,3 +1,4 @@
+using ShowroomBot.Configuration;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using ShowroomBot.Core.Scenarios;
@@ -41,39 +42,28 @@ public sealed class MouseInputSender
         }
     }
 
-    public async Task MoveToAsync(
-        Point target,
-        TimeSpan movementDuration,
-        TimeSpan stepDelay,
-        CancellationToken cancellationToken = default)
+    private readonly MouseSettings _settings;
+    public MouseInputSender(MouseSettings? settings = null) => _settings = settings ?? new();
+    public async Task MoveToAsync(Point target, CancellationToken cancellationToken = default)
     {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,
+            ScenarioExecution.Current?.Token ?? CancellationToken.None);
+        var token = linked.Token;
+        token.ThrowIfCancellationRequested();
         if (!NativeMethods.GetCursorPos(out var start))
-        {
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Не удалось определить положение указателя мыши.");
-        }
-
-        if (movementDuration <= TimeSpan.Zero || stepDelay <= TimeSpan.Zero)
-        {
-            SendAbsoluteMove(target.X, target.Y);
-            return;
-        }
-
-        var steps = Math.Max(1, (int)Math.Ceiling(movementDuration / stepDelay));
+        var duration = Math.Max(1, _settings.MovementDurationMilliseconds *
+            (1 + (Random.Shared.NextDouble() * 2 - 1) * _settings.DurationVariation));
+        var steps = Math.Max(2, (int)Math.Ceiling(duration / Math.Max(1, _settings.StepDelayMilliseconds)));
+        var path = new MouseTrajectory(new Point(start.X, start.Y), target, _settings);
         for (var step = 1; step <= steps; step++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var progress = (double)step / steps;
-            var x = (int)Math.Round(start.X + ((target.X - start.X) * progress));
-            var y = (int)Math.Round(start.Y + ((target.Y - start.Y) * progress));
-            SendAbsoluteMove(x, y);
-
-            if (step < steps)
-            {
-                await Task.Delay(stepDelay, cancellationToken);
-            }
+            await Task.Delay(TimeSpan.FromMilliseconds(duration / steps), token);
+            token.ThrowIfCancellationRequested();
+            var point = path.At((double)step / steps);
+            SendAbsoluteMove(point.X, point.Y);
         }
     }
-
     private static void SendAbsoluteMove(int screenX, int screenY)
     {
         ScenarioExecution.Perform(() => SendAbsoluteMoveCore(screenX, screenY));

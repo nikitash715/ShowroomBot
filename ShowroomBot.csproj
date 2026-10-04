@@ -11,7 +11,7 @@
 
   <ItemGroup>
     <Compile Remove="Tests\**\*.cs" />
-    <None Update="Queries\**\*.txt">
+    <None Update="Queries1c\**\*.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>

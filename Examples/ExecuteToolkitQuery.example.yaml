@@ -7,9 +7,8 @@ steps:
     database: 'example_database'
     user: 'example_user'
     password: ''
-    queryFile: 'Queries/Queries1c/РаспределениеЗапасов.txt'
+    queryFile: 'Queries1c/РаспределениеЗапасов.txt'
     queryInputMode: paste # typing — набор, paste — вставка через буфер обмена
-    typingDelayMs: 10
     afterActivationDelayMs: 1000
     afterRunDialogDelayMs: 500
     panelColor: '#C0DCC0'
