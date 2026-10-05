@@ -26,6 +26,7 @@ public sealed class RdpTestScenario
             throw new InvalidOperationException("Не найдено открытое окно mstsc или его не удалось активировать.");
         }
 
+        using var inputGuard = RdpInputGuard.Require(windowHandle);
         await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
         _keyboardInputSender.SendWindowsRun();
         await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);

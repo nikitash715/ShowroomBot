@@ -198,7 +198,7 @@ public sealed class KeyboardInputSender
 
     private static void SendInputs(params NativeMethods.INPUT[] inputs)
     {
-        ScenarioExecution.Perform(() => SendInputsCore(inputs));
+        ScenarioExecution.Perform(() => { ShowroomBot.Rdp.RdpInputGuard.Check(); SendInputsCore(inputs); });
     }
 
     private static void SendInputsCore(NativeMethods.INPUT[] inputs)

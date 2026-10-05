@@ -28,7 +28,9 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         {
             // Open1C is a separate scenario step; use the client it left active in RDP.
             var (_, layout) = await Observe(token);
-            if (layout.ConsoleTab is Rectangle tab)
+            if (layout.Editor != null && layout.Execute != null)
+                ScenarioExecution.Log("Toolkit: редактор уже открыт; переключение вкладки не требуется.");
+            else if (layout.ConsoleTab is Rectangle tab)
                 await Click(tab, token);
             else
             {

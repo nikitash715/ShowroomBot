@@ -9,7 +9,8 @@ public sealed class RdpController(string defaultHost = "")
     public async Task<IntPtr> OpenOrActivateAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!TryActivateExistingWindow(out _))
+        var session = FindExistingWindow(defaultHost);
+        if (session == IntPtr.Zero)
         {
             if (string.IsNullOrWhiteSpace(defaultHost))
                 throw new InvalidOperationException("Не задан адрес RDP в настройках подключения.");
@@ -25,7 +26,9 @@ public sealed class RdpController(string defaultHost = "")
         {
             await Task.Delay(500, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
-            if (TryActivateExistingWindow(out var handle) && IsSessionWindowReady(handle))
+            if (session == IntPtr.Zero) session = FindExistingWindow(defaultHost, allowPending: true);
+            var handle = session;
+            if (handle != IntPtr.Zero && Activate(handle) && IsSessionWindowReady(handle))
             {
                 if (handle != lastHandle) stable.Restart();
                 lastHandle = handle;
@@ -44,11 +47,12 @@ public sealed class RdpController(string defaultHost = "")
         throw new TimeoutException("RDP не готов за 60 секунд. Завершите вход и подтвердите диалоги подключения, затем повторите сценарий.");
     }
 
-    private static bool IsSessionWindowReady(IntPtr handle)
+    internal static bool IsSessionWindowReady(IntPtr handle)
     {
         var className = new System.Text.StringBuilder(256);
         NativeMethods.GetClassName(handle, className, className.Capacity);
-        if (className.ToString() != "TscShellContainerClass") return false;
+        if (className.ToString() != "TscShellContainerClass" || !NativeMethods.IsWindowVisible(handle) ||
+            !NativeMethods.IsWindowEnabled(handle) || NativeMethods.IsIconic(handle)) return false;
         var popup = NativeMethods.GetLastActivePopup(handle);
         return (popup == handle || !NativeMethods.IsWindowVisible(popup)) &&
             NativeMethods.GetForegroundWindow() == handle &&
@@ -63,8 +67,11 @@ public sealed class RdpController(string defaultHost = "")
             return;
         }
 
-        if (TryActivateExistingWindow(out _))
+        var existing = FindExistingWindow(host);
+        if (existing != IntPtr.Zero)
         {
+            if (!Activate(existing))
+                throw new InvalidOperationException("RDP найден, но не активирован. Новый mstsc не запущен.");
             return;
         }
 
@@ -79,34 +86,81 @@ public sealed class RdpController(string defaultHost = "")
     public bool TryActivateExistingWindow(out IntPtr windowHandle)
     {
         ScenarioExecution.CheckCancellation();
-        windowHandle = IntPtr.Zero;
+        windowHandle = FindExistingWindow(defaultHost);
+        return windowHandle != IntPtr.Zero && Activate(windowHandle);
+    }
 
-        foreach (var process in Process.GetProcessesByName("mstsc"))
+    private static IntPtr FindExistingWindow(string host, bool allowPending = false)
+    {
+        var processes = Process.GetProcessesByName("mstsc");
+        try
         {
-            using (process)
+            var ids = processes.Select(p => (uint)p.Id).ToHashSet();
+            var candidates = new List<IntPtr>();
+            if (!NativeMethods.EnumWindows((handle, _) =>
             {
-                process.Refresh();
-                if (process.HasExited || process.MainWindowHandle == IntPtr.Zero)
-                {
-                    continue;
-                }
-
-                windowHandle = process.MainWindowHandle;
-                var handle = windowHandle;
-                var activated = false;
-                ScenarioExecution.Perform(() =>
-                {
-                    // SW_RESTORE would undo our maximize on the next activation poll.
-                    if (!NativeMethods.IsZoomed(handle))
-                        NativeMethods.ShowWindow(handle, NativeMethods.SW_RESTORE);
-                    activated = NativeMethods.SetForegroundWindow(handle);
-                });
-                if (activated) EnsureWindowSize(handle);
-                return activated;
-            }
+                NativeMethods.GetWindowThreadProcessId(handle, out var pid);
+                if (!ids.Contains(pid) || !NativeMethods.IsWindowVisible(handle)) return true;
+                var name = new System.Text.StringBuilder(256);
+                var title = new System.Text.StringBuilder(1024);
+                NativeMethods.GetClassName(handle, name, name.Capacity);
+                NativeMethods.GetWindowText(handle, title, title.Capacity);
+                var match = MatchesSession(name.ToString(), title.ToString(), host);
+                ScenarioExecution.Log($"RDP: hwnd=0x{handle:X}, pid={pid}, class={name}, title={title}, minimized={NativeMethods.IsIconic(handle)}, match={match}");
+                if (match) candidates.Add(handle);
+                return true;
+            }, IntPtr.Zero))
+                throw new InvalidOperationException("Не удалось перечислить окна RDP. Новый mstsc не запущен.");
+            if (candidates.Count == 1) return candidates[0];
+            if (candidates.Count > 1)
+                throw new InvalidOperationException("Найдено несколько подходящих RDP-сеансов. Закройте лишние подключения.");
+            // Unknown windows may belong to a connecting/disconnected session or use a custom title.
+            // Do not risk creating a duplicate when the destination cannot be established.
+            if (ids.Count > 0 && !allowPending)
+                throw new InvalidOperationException("mstsc уже запущен, но подходящее окно сеанса не найдено. Проверьте адрес и диалоги подключения. Новый mstsc не запущен.");
+            return IntPtr.Zero;
         }
+        finally { foreach (var process in processes) process.Dispose(); }
+    }
 
-        return false;
+    internal static bool MatchesSession(string className, string title, string host)
+    {
+        if (className != "TscShellContainerClass") return false;
+        if (string.IsNullOrWhiteSpace(host)) return true;
+        host = host.Trim();
+        title = title.Trim();
+        if (title.Equals(host, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!title.StartsWith(host, StringComparison.OrdinalIgnoreCase)) return false;
+        // mstsc uses a localized separator (including an em dash on Russian Windows).
+        // Require whitespace around it so host prefixes cannot select another machine.
+        var suffix = title.AsSpan(host.Length);
+        if (suffix.IsEmpty || !char.IsWhiteSpace(suffix[0])) return false;
+        suffix = suffix.TrimStart();
+        return suffix.Length >= 2 && suffix[0] is '-' or '–' or '—' && char.IsWhiteSpace(suffix[1]);
+    }
+
+    private static bool Activate(IntPtr handle)
+    {
+        var requested = false;
+        ScenarioExecution.Perform(() =>
+        {
+            if (NativeMethods.IsIconic(handle)) NativeMethods.ShowWindow(handle, NativeMethods.SW_RESTORE);
+            requested = NativeMethods.SetForegroundWindow(handle);
+        });
+        if (NativeMethods.GetForegroundWindow() == handle) EnsureWindowSize(handle);
+        var ready = IsSessionWindowReady(handle);
+        ScenarioExecution.Log($"RDP: activation hwnd=0x{handle:X}, SetForegroundWindow={requested}, foreground=0x{NativeMethods.GetForegroundWindow():X}, ready={ready}");
+        if (ready && ScenarioExecution.Current is { } execution) execution.RdpWindow = handle;
+        return ready;
+    }
+
+    public static void EnsureSessionForeground(IntPtr handle)
+    {
+        ScenarioExecution.CheckCancellation();
+        if (handle != IntPtr.Zero && IsSessionWindowReady(handle)) return;
+        ScenarioExecution.Log($"RDP: ввод заблокирован; expected=0x{handle:X}, foreground=0x{NativeMethods.GetForegroundWindow():X}");
+        if (ScenarioExecution.Current is not null) ScenarioExecution.CancelCurrent();
+        throw new InvalidOperationException("RDP-сеанс не готов или потерял фокус. Сценарий остановлен до отправки ввода.");
     }
 
     private static void EnsureWindowSize(IntPtr handle)

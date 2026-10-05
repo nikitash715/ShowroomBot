@@ -33,6 +33,7 @@ public sealed class OpenOneCBaseStep : IScenarioStep
         ValidateDefinition();
 
         var windowHandle = await _rdpController.OpenOrActivateAsync(cancellationToken);
+        using var inputGuard = RdpInputGuard.Require(windowHandle);
 
         await DelayAsync(_definition.AfterActivationDelayMs, cancellationToken);
         var color = ParsePanelColor();
@@ -68,6 +69,7 @@ public sealed class OpenOneCBaseStep : IScenarioStep
         while (timer.Elapsed < timeout)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            EnsureRdpForeground(windowHandle);
             var path = _screenshots.CaptureClientArea(windowHandle,
                 ScenarioExecution.Current?.DirectoryPath ?? Path.Combine(AppContext.BaseDirectory, "diagnostics", "open1c-ready"));
             var recognition = await OneCBaseRecognizer.RecognizeWindowAsync(path, color, _definition.ColorTolerance, cancellationToken);
@@ -130,8 +132,7 @@ public sealed class OpenOneCBaseStep : IScenarioStep
     private static void EnsureRdpForeground(IntPtr handle)
     {
         ScenarioExecution.CheckCancellation();
-        if (NativeMethods.GetForegroundWindow() != handle)
-            throw new InvalidOperationException("Open1C: фокус вышел из RDP. В mstsc включите применение сочетаний клавиш Windows на удалённом компьютере. Перебор прерван, новый экземпляр не запускается.");
+        RdpController.EnsureSessionForeground(handle);
     }
 
     private Color ParsePanelColor()

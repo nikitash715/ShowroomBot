@@ -13,6 +13,7 @@ static void Check(bool value, string message)
     Console.WriteLine($"PASS: {message}");
 }
 
+await RdpChecks.RunAsync(Check);
 var diagnosticsRoot = Path.Combine(Path.GetTempPath(), $"showroombot-cleanup-{Guid.NewGuid():N}");
 try
 {
@@ -136,7 +137,7 @@ using (var cancelled = new CancellationTokenSource())
 var configPath = Path.GetTempFileName();
 try
 {
-    var source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "config.yaml"));
+    var source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "configexample.yaml"));
     File.WriteAllText(configPath, source);
     var service = new SettingsService(configPath);
     var settings = service.Load();
@@ -148,6 +149,8 @@ try
         "изменение настройки сохраняет комментарии и корректный YAML");
     File.WriteAllText(configPath, "# заголовок\nidleMinutes: 17 # inline\nautomation:\n  mouse:\n    movementDurationMilliseconds: 410 # длительность\n    stepDelayMilliseconds: 12\nunknown: 'keep' # сохранить\n");
     var migrated = service.Load();
+    Check(!migrated.Telegram.Enabled && migrated.Telegram.AllowedUserId == 0 &&
+        migrated.Telegram.BotToken == "", "Telegram: старый конфиг оставляет интеграцию выключенной");
     service.Save(migrated);
     var saved = File.ReadAllText(configPath);
     Check(service.Load().Automation.Typing.MinimumDelayMilliseconds == 80 && saved.Contains("# inline") &&
@@ -244,6 +247,25 @@ foreach (var (scale, offset) in new[] { (1, 0), (2, 40) })
     Check(layout.Editor.HasValue && layout.Result.HasValue && layout.RowCount == 100,
         $"границы редактора и результата при масштабе {scale} и смещении {offset}");
     Check(layout.Execute == labels[2].Bounds, "верхняя кнопка Выполнить отделена от Проверить");
+    var consoleWordBounds = R(450, 20, 70, 16);
+    var mergedTabs = labels.Select((l, index) => index == 0 ? l with
+        { Text = "Начальная страница Другая вкладка Новый: Консоль разработчика (Toolkit)",
+          Bounds = R(20, 20, 700, 16) } : l)
+        .Append(new RecognizedText("Консоль", consoleWordBounds)).ToArray();
+    Check(ToolkitConsoleRecognizer.Analyze(image, mergedTabs).ConsoleTab == consoleWordBounds,
+        "объединённая OCR строка вкладок направляет клик на слово Консоль");
+    var missingSuffix = labels.Select((l, index) => index == 1
+        ? l with { Text = "Новый: Консоль разработчика" } : l).ToArray();
+    var missingSuffixLayout = ToolkitConsoleRecognizer.Analyze(image, missingSuffix);
+    Check(missingSuffixLayout.Editor == layout.Editor && missingSuffixLayout.Execute == layout.Execute,
+        "пропуск Toolkit в заголовке формы не теряет редактор и Выполнить");
+    var missingTabSuffix = labels.Select((l, index) => index == 0
+        ? l with { Text = "Новый: Консоль разработчика" } : l).ToArray();
+    Check(ToolkitConsoleRecognizer.Analyze(image, missingTabSuffix).Editor == layout.Editor,
+        "пропуск Toolkit во вкладке не теряет активную форму");
+    Check(ToolkitConsoleRecognizer.Analyze(image, labels.Select(l => l with
+        { Text = l.Text.Replace("(Toolkit)", "") }).ToArray()).Editor == null,
+        "консоль без подтверждения Toolkit не принимается");
     Check(ToolkitConsoleRecognizer.Analyze(image, labels.Where((_, index) => index != 1).ToArray()).Editor == null,
         "вкладка неактивной консоли не принимается за активную форму");
     graphics.DrawRectangle(Pens.Red, R(300, 150, 650, 220));
@@ -445,6 +467,7 @@ foreach (var screenshot in args.Where(arg => arg != "--expect-query-error"))
     if (actual.RowCount > 0)
         Check(actual.Result != null, $"реальный снимок: видимая область результата {actual.Result}");
 }
+await TelegramChecks.RunAsync(Check);
 Console.WriteLine("Все проверки пройдены.");
 
 sealed class ManualTimeProvider : TimeProvider

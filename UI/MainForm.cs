@@ -32,6 +32,7 @@ public sealed class MainForm : Form
     private readonly Button _stopButton;
     private readonly Button _openRdpButton;
     private readonly CheckBox _autoStartCheckBox;
+    private readonly CheckBox _telegramNotificationsCheckBox;
     private readonly NumericUpDown _idleMinutesInput;
     private readonly ComboBox _scenarioComboBox;
 
@@ -66,8 +67,8 @@ public sealed class MainForm : Form
 
         Text = "ShowroomBot";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(620, 440);
-        Size = new Size(720, 440);
+        MinimumSize = new Size(620, 450);
+        Size = new Size(720, 450);
         Icon = LoadApplicationIcon();
 
         _stateValueLabel = CreateValueLabel();
@@ -90,6 +91,13 @@ public sealed class MainForm : Form
             Maximum = 1440,
             Value = Math.Clamp(_settings.IdleMinutes, 1, 1440),
             Width = 80
+        };
+        _telegramNotificationsCheckBox = new CheckBox
+        {
+            Name = "telegramNotificationsCheckBox",
+            Text = "Присылать уведомления о демонстрации",
+            AutoSize = true,
+            Checked = _settings.Telegram.NotifyDemoEvents
         };
         _scenarioComboBox = new ComboBox
         {
@@ -139,6 +147,11 @@ public sealed class MainForm : Form
             _settings.IdleMinutes = (int)_idleMinutesInput.Value;
             SaveSettings();
             UpdateView();
+        };
+        _telegramNotificationsCheckBox.CheckedChanged += (_, _) =>
+        {
+            _settings.Telegram.NotifyDemoEvents = _telegramNotificationsCheckBox.Checked;
+            SaveSettings();
         };
         _scenarioComboBox.SelectedIndexChanged += (_, _) => UpdateView();
         _demoController.StateChanged += (_, _) => UpdateView();
@@ -197,12 +210,27 @@ public sealed class MainForm : Form
 
     private Control BuildLayout()
     {
+        var tabs = new TabControl
+        {
+            Name = "settingsTabs",
+            Dock = DockStyle.Fill
+        };
+        var botTab = new TabPage("Бот") { Name = "botTab", Padding = new Padding(18) };
+        var telegramTab = new TabPage("Telegram")
+        {
+            Name = "telegramTab",
+            Padding = new Padding(18),
+            AutoScroll = true
+        };
+        tabs.TabPages.Add(botTab);
+        tabs.TabPages.Add(telegramTab);
         var panel = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(18),
+            Margin = new Padding(0),
             ColumnCount = 2,
-            RowCount = 9
+            RowCount = 9,
+            AutoScroll = true
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -235,6 +263,36 @@ public sealed class MainForm : Form
         panel.SetColumnSpan(settingsPanel, 2);
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
+        var telegramSettingsPanel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(8)
+        };
+        telegramSettingsPanel.Controls.Add(_telegramNotificationsCheckBox);
+        telegramSettingsPanel.Controls.Add(new Label
+        {
+            Text = "Запуск, завершение, ошибка и остановка. Результат — со снимком экрана.",
+            AutoSize = true,
+            MaximumSize = new Size(500, 0),
+            Margin = new Padding(3, 4, 3, 3)
+        });
+        var telegramGroup = new GroupBox
+        {
+            Name = "telegramSettingsGroup",
+            Text = "Telegram",
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
+            Padding = new Padding(8, 20, 8, 8),
+            Margin = new Padding(0)
+        };
+        telegramGroup.Controls.Add(telegramSettingsPanel);
+        botTab.Controls.Add(panel);
+        telegramTab.Controls.Add(telegramGroup);
+
         var buttonPanel = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -263,7 +321,7 @@ public sealed class MainForm : Form
         panel.SetColumnSpan(stopShortcutLabel, 2);
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        return panel;
+        return tabs;
     }
 
     private static Label CreateValueLabel()
@@ -342,6 +400,40 @@ public sealed class MainForm : Form
         var seconds = Math.Min(_settings.Vpn.CheckIntervalSeconds, _settings.Rdp.CheckIntervalSeconds);
         return TimeSpan.FromSeconds(Math.Max(1, seconds));
     }
+
+    // These adapters execute on the same UI thread as buttons, tray and auto-start.
+    public Task<string> StartDemoFromTelegramAsync(CancellationToken cancellationToken) =>
+        InvokeAsync(() =>
+        {
+            if (_isExiting || IsDisposed) return "Приложение завершается.";
+            if (_isTestScenarioRunning) return "Демонстрация уже выполняется.";
+            if (_scenarioComboBox.SelectedItem is not ScenarioDescriptor)
+                return "Не удалось запустить: нет доступного сценария.";
+            _ = StartDemoAsync();
+            return "Запуск демонстрации начат.";
+        }, cancellationToken);
+
+    public Task<string> StopDemoFromTelegramAsync(CancellationToken cancellationToken) =>
+        InvokeAsync(() =>
+        {
+            if (_isExiting || IsDisposed) return "Приложение завершается.";
+            if (!_isTestScenarioRunning) return "Демонстрация не выполнялась.";
+            StopDemo();
+            return "Остановка демонстрации запрошена.";
+        }, cancellationToken);
+
+    public Task<string> ConfigureAutoStartFromTelegramAsync(bool? enabled, int? idleMinutes,
+        CancellationToken cancellationToken) => InvokeAsync(() =>
+        {
+            if (_isExiting || IsDisposed) return "Приложение завершается.";
+            if (idleMinutes is < 1 or > 1440)
+                return "Интервал должен быть целым числом от 1 до 1440 минут.";
+            // Existing control handlers update AppSettings, persist YAML and refresh the UI.
+            if (idleMinutes.HasValue) _idleMinutesInput.Value = idleMinutes.Value;
+            if (enabled.HasValue) _autoStartCheckBox.Checked = enabled.Value;
+            return $"Автозапуск: {(_settings.AutoStartDemo ? "включён" : "выключен")}. " +
+                $"Интервал бездействия: {_settings.IdleMinutes} мин.";
+        }, cancellationToken);
 
     private async Task StartDemoAsync(bool automatic = false)
     {

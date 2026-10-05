@@ -9,10 +9,11 @@ public sealed class ScenarioExecution : IDisposable
     private static readonly object ActionGate = new();
     private static ScenarioExecution? _active;
     private readonly CancellationTokenSource _source;
-    private readonly object _logGate = new();
+    private static readonly object LogGate = new();
     public static ScenarioExecution? Current => Local.Value;
     public CancellationToken Token { get; }
     public string DirectoryPath { get; }
+    internal IntPtr RdpWindow { get; set; }
     public string LogPath => Path.Combine(DirectoryPath, "scenario.log");
 
     public ScenarioExecution(CancellationToken cancellationToken)
@@ -53,10 +54,13 @@ public sealed class ScenarioExecution : IDisposable
 
     public static void CheckCancellation() => Current?.Token.ThrowIfCancellationRequested();
 
-    public void Write(string message)
+    public void Write(string message) => WriteLog(LogPath, message);
+
+    // Background delivery diagnostics can arrive while the scenario is still writing.
+    internal static void WriteLog(string path, string message)
     {
         var timestamp = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture);
-        lock (_logGate) File.AppendAllText(LogPath, $"{timestamp} {message}{Environment.NewLine}");
+        lock (LogGate) File.AppendAllText(path, $"{timestamp} {message}{Environment.NewLine}");
     }
 
     public static void Log(string message) => Current?.Write(message);

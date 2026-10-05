@@ -7,6 +7,15 @@ public sealed class AppSettings
     public VpnSettings Vpn { get; set; } = new();
     public RdpSettings Rdp { get; set; } = new();
     public AutomationSettings Automation { get; set; } = new();
+    public TelegramSettings Telegram { get; set; } = new();
+}
+
+public sealed class TelegramSettings
+{
+    public bool Enabled { get; set; }
+    public bool NotifyDemoEvents { get; set; } = true;
+    public string BotToken { get; set; } = string.Empty;
+    public long AllowedUserId { get; set; }
 }
 
 public sealed class VpnSettings

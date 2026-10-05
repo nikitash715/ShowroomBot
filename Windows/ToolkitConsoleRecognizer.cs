@@ -63,10 +63,25 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
     public static ToolkitConsoleLayout Analyze(Bitmap image, IReadOnlyList<RecognizedText> labels, CancellationToken token = default)
     {
         token.ThrowIfCancellationRequested();
-        var titles = labels.Where(l => l.Text.Contains("Консоль разработчика", StringComparison.OrdinalIgnoreCase)
-            && Regex.IsMatch(l.Text, @"T[oо0]{1,2}[lI1]k[iI1]t", RegexOptions.IgnoreCase)).OrderBy(l => l.Bounds.Top).ToArray();
-        var tab = titles.FirstOrDefault()?.Bounds;
-        var formTitle = titles.FirstOrDefault(l => tab.HasValue && l.Bounds.Top > tab.Value.Bottom);
+        var titles = labels.Where(l => l.Text.Contains("Консоль разработчика", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(l => l.Bounds.Top).ToArray();
+        // OCR can omit Toolkit from either the tab or the active form heading.
+        // Require two separate headings and confirm Toolkit in at least one.
+        var tabTitle = titles.FirstOrDefault();
+        var formTitle = titles.FirstOrDefault(l => tabTitle != null && l.Bounds.Top > tabTitle.Bounds.Bottom);
+        var toolkitConfirmed = new[] { tabTitle, formTitle }.Any(l => l != null &&
+            Regex.IsMatch(l.Text, @"T[oо0]{1,2}[lI1]k[iI1]t", RegexOptions.IgnoreCase));
+        var tab = toolkitConfirmed ? tabTitle?.Bounds : null;
+        if (!toolkitConfirmed) formTitle = null;
+        if (tab is Rectangle tabBounds)
+        {
+            // OCR may merge the entire row of tabs into one line. Its center
+            // can belong to a different tab; use the console word's own bounds.
+            var consoleWord = labels.FirstOrDefault(l =>
+                l.Text.Trim().Equals("Консоль", StringComparison.OrdinalIgnoreCase) &&
+                tabBounds.Contains(l.Bounds));
+            if (consoleWord != null) tab = consoleWord.Bounds;
+        }
         var text = labels.Where(l => formTitle != null && l.Bounds.Top > formTitle.Bounds.Bottom && l.Text.Trim() == "Текст")
             .OrderBy(l => l.Bounds.Top).FirstOrDefault();
         var execute = labels.Where(l => l.Text.Trim() == "Выполнить" && text != null && l.Bounds.Bottom < text.Bounds.Top)
@@ -76,7 +91,8 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
         if (heading != null && Regex.Match(heading.Text, @"(\d+(?:[ \u00A0\u202F]\d{3})*)\s*строк", RegexOptions.IgnoreCase) is { Success: true } match)
             rows = int.Parse(Regex.Replace(match.Groups[1].Value, @"\s", ""));
         Rectangle? editor = text == null ? null : FindFrame(image, text.Bounds.Left - text.Bounds.Height,
-            text.Bounds.Right, text.Bounds.Bottom, heading?.Bounds.Top ?? image.Height, text.Bounds.Height, token);
+            text.Bounds.Right, text.Bounds.Bottom, heading?.Bounds.Top ?? image.Height, text.Bounds.Height, token,
+            allowClippedRight: true);
         Rectangle? table = heading == null ? null : FindFrame(image, heading.Bounds.Left - heading.Bounds.Height * 3,
             heading.Bounds.Left + heading.Bounds.Height, heading.Bounds.Bottom, image.Height, heading.Bounds.Height, token);
         if (table == null && heading != null)
@@ -133,7 +149,8 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
         return null;
     }
 
-    private static Rectangle? FindFrame(Bitmap image, int fromX, int toX, int fromY, int toY, int scale, CancellationToken token)
+    private static Rectangle? FindFrame(Bitmap image, int fromX, int toX, int fromY, int toY, int scale,
+        CancellationToken token, bool allowClippedRight = false)
     {
         // Search below the anchor for a continuous frame. Both vertical sides must
         // reach the bottom; internal table rows cannot become the region boundary.
@@ -146,9 +163,20 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
                 var right = x;
                 while (right + 1 < image.Width && Border(image.GetPixel(right + 1, y))) right++;
                 if (right - x < scale * 12) continue;
+                var clippedRight = allowClippedRight && (right == image.Width - 1 ||
+                    image.GetPixel(right + 1, y).A == 0);
                 var bottom = y + 1;
-                while (bottom < toY && Border(image.GetPixel(x, bottom)) && Border(image.GetPixel(right, bottom))) bottom++;
+                while (bottom < toY && Border(image.GetPixel(x, bottom)) &&
+                    (clippedRight || Border(image.GetPixel(right, bottom)))) bottom++;
                 if (bottom - y < scale * 5) continue;
+                if (clippedRight)
+                {
+                    // Require a visible bottom border as well as the left side;
+                    // the right side may lie outside a restored RDP viewport.
+                    var bottomRight = x;
+                    while (bottomRight + 1 < image.Width && Border(image.GetPixel(bottomRight + 1, bottom - 1))) bottomRight++;
+                    if (bottomRight != right) continue;
+                }
                 return Rectangle.FromLTRB(x + 3, y + 3, right - 3, bottom - 3);
             }
         }

@@ -6,10 +6,13 @@ namespace ShowroomBot.Core.Scenarios;
 public sealed class ScenarioRunner
 {
     private readonly ScenarioStepFactory _stepFactory;
+    private readonly Func<string, string> _captureDesktop;
+    public event Action<ScenarioNotification>? ScenarioChanged;
 
-    public ScenarioRunner(ScenarioStepFactory stepFactory)
+    public ScenarioRunner(ScenarioStepFactory stepFactory, Func<string, string>? captureDesktop = null)
     {
         _stepFactory = stepFactory;
+        _captureDesktop = captureDesktop ?? new WindowScreenshotService().CaptureDesktop;
     }
 
     public async Task RunAsync(
@@ -20,6 +23,9 @@ public sealed class ScenarioRunner
         execution.Write($"Начало сценария: {scenario.Name}");
         var stepType = string.Empty;
         var timer = Stopwatch.StartNew();
+        var outcome = ScenarioOutcome.Completed;
+        string? error = null;
+        Notify(new(scenario.Name, ScenarioOutcome.Started, LogPath: execution.LogPath), execution);
         try
         {
             foreach (var definition in scenario.Steps)
@@ -37,24 +43,34 @@ public sealed class ScenarioRunner
         }
         catch (OperationCanceledException) when (execution.Token.IsCancellationRequested)
         {
+            outcome = ScenarioOutcome.Stopped;
             execution.Write($"Отмена сценария: {stepType}; затрачено {timer.Elapsed.TotalSeconds:F3} с");
             throw;
         }
         catch (Exception) when (execution.Token.IsCancellationRequested)
         {
+            outcome = ScenarioOutcome.Stopped;
             execution.Write($"Отмена сценария: {stepType}; затрачено {timer.Elapsed.TotalSeconds:F3} с");
             throw new OperationCanceledException(execution.Token);
         }
         catch (Exception exception)
         {
+            outcome = ScenarioOutcome.Failed;
+            error = exception.Message;
             execution.Write($"{(exception is TimeoutException ? "Таймаут" : "Ошибка")}: {stepType}; " +
                 $"затрачено {timer.Elapsed.TotalSeconds:F3} с; {exception.Message}");
-            // Capture as-is: error handling must never restore or activate RDP.
-            if (!execution.Token.IsCancellationRequested)
+            throw;
+        }
+        finally
+        {
+            string? path = null;
+            // Reuse the diagnostic screenshot for Telegram. Capture immediately, including
+            // cancellation, without activating windows or using the cancelled scenario token.
+            if (outcome == ScenarioOutcome.Failed || ScenarioChanged is not null)
             {
                 try
                 {
-                    var path = new WindowScreenshotService().CaptureDesktop(execution.DirectoryPath);
+                    path = _captureDesktop(execution.DirectoryPath);
                     execution.Write($"Диагностический screenshot: {path}");
                 }
                 catch (Exception screenshotError)
@@ -62,7 +78,17 @@ public sealed class ScenarioRunner
                     execution.Write($"Не удалось сохранить screenshot: {screenshotError.Message}");
                 }
             }
-            throw;
+            Notify(new(scenario.Name, outcome, error, path, execution.LogPath), execution);
+        }
+    }
+
+    private void Notify(ScenarioNotification notification, ScenarioExecution execution)
+    {
+        if (ScenarioChanged is not { } subscribers) return;
+        foreach (Action<ScenarioNotification> subscriber in subscribers.GetInvocationList())
+        {
+            try { subscriber(notification); }
+            catch (Exception) { execution.Write("Не удалось передать уведомление о сценарии."); }
         }
     }
 }

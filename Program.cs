@@ -4,6 +4,8 @@ using ShowroomBot.Core.Scenarios;
 using ShowroomBot.Rdp;
 using ShowroomBot.UI;
 using ShowroomBot.Windows;
+using ShowroomBot.Telegram;
+using System.Net.Http;
 
 namespace ShowroomBot;
 
@@ -55,6 +57,21 @@ internal static class Program
             rdpController,
             demoScenario,
             demoController);
-        Application.Run(mainForm);
+        using var telegramCancellation = new CancellationTokenSource();
+        using var telegramHttp = new HttpClient();
+        var telegram = new TelegramBotService(telegramHttp, settings.Telegram,
+            mainForm.StartDemoFromTelegramAsync, mainForm.StopDemoFromTelegramAsync,
+            new WindowScreenshotService().CaptureDesktop, mainForm.ConfigureAutoStartFromTelegramAsync);
+        if (telegram.IsEnabled) scenarioRunner.ScenarioChanged += telegram.QueueNotification;
+        Task telegramTask = Task.CompletedTask;
+        mainForm.Shown += (_, _) => telegramTask = Task.Run(() => telegram.RunAsync(telegramCancellation.Token));
+        mainForm.FormClosed += (_, _) => telegramCancellation.Cancel();
+        try { Application.Run(mainForm); }
+        finally
+        {
+            scenarioRunner.ScenarioChanged -= telegram.QueueNotification;
+            telegramCancellation.Cancel();
+            telegramTask.GetAwaiter().GetResult();
+        }
     }
 }

@@ -64,6 +64,7 @@ public sealed class SettingsService
         settings.Vpn ??= new VpnSettings();
         settings.Rdp ??= new RdpSettings();
         settings.Automation ??= new AutomationSettings();
+        settings.Telegram ??= new TelegramSettings();
         settings.Automation.Mouse ??= new MouseSettings();
         settings.Automation.Typing ??= new TypingSettings();
 

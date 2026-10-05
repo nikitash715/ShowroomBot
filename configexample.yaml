@@ -9,6 +9,16 @@
 autoStartDemo: false
 idleMinutes: 10
 
+telegram:
+  # Включайте только в локальном config.yaml; изменения требуют перезапуска.
+  enabled: false
+  # Уведомления о запуске и результате демонстрации; меняется в блоке Telegram на форме.
+  notifyDemoEvents: true
+  botToken: ''
+  # Числовой ID единственного разрешённого пользователя (не @username).
+  # Команды принимаются только в его личном чате с ботом.
+  allowedUserId: 0
+
 vpn:
   # Имена VPN-соединений/сетевых адаптеров на вашем компьютере.
   connectionNames:

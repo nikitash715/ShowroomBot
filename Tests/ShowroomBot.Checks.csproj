@@ -7,4 +7,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\ShowroomBot.csproj" /></ItemGroup>
+  <ItemGroup>
+    <None Include="..\configexample.yaml" Link="configexample.yaml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

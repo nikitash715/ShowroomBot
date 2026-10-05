@@ -4,6 +4,20 @@ namespace ShowroomBot.Windows;
 
 public static partial class NativeMethods
 {
+    internal delegate bool EnumWindowsProc(IntPtr handle, IntPtr parameter);
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+    [DllImport("user32.dll")]
+    internal static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    internal static extern int GetWindowText(IntPtr handle, System.Text.StringBuilder text, int count);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsIconic(IntPtr handle);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindowEnabled(IntPtr handle);
     internal const int SW_RESTORE = 9;
     internal const int SW_MAXIMIZE = 3;
     internal const uint MONITOR_DEFAULTTONEAREST = 2;
