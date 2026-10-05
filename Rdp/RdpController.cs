@@ -96,13 +96,50 @@ public sealed class RdpController(string defaultHost = "")
                 var activated = false;
                 ScenarioExecution.Perform(() =>
                 {
-                    NativeMethods.ShowWindowAsync(handle, NativeMethods.SW_RESTORE);
+                    // SW_RESTORE would undo our maximize on the next activation poll.
+                    if (!NativeMethods.IsZoomed(handle))
+                        NativeMethods.ShowWindow(handle, NativeMethods.SW_RESTORE);
                     activated = NativeMethods.SetForegroundWindow(handle);
                 });
+                if (activated) EnsureWindowSize(handle);
                 return activated;
             }
         }
 
         return false;
+    }
+
+    private static void EnsureWindowSize(IntPtr handle)
+    {
+        var monitor = NativeMethods.MonitorFromWindow(handle, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        var info = new NativeMethods.MONITORINFO
+        {
+            Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>()
+        };
+        if (monitor == IntPtr.Zero || !NativeMethods.GetMonitorInfo(monitor, ref info) ||
+            !NativeMethods.GetWindowRect(handle, out var bounds))
+            throw new InvalidOperationException("Не удалось определить размер окна RDP и рабочую область монитора.");
+
+        ScenarioExecution.Log($"RDP: окно [{bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}], рабочая область [{info.WorkArea.Left},{info.WorkArea.Top},{info.WorkArea.Right},{info.WorkArea.Bottom}], maximized={NativeMethods.IsZoomed(handle)}");
+        if (!NeedsMaximize(bounds, info.WorkArea) || NativeMethods.IsZoomed(handle)) return;
+
+        ScenarioExecution.Log("RDP: видимая часть окна меньше 90% рабочей области, разворачиваем Windows Maximize");
+        ScenarioExecution.Perform(() => NativeMethods.ShowWindow(handle, NativeMethods.SW_MAXIMIZE));
+        // Synchronous activation callers also need the resized interface to settle.
+        for (var i = 0; i < 20; i++)
+        {
+            ScenarioExecution.CheckCancellation();
+            Thread.Sleep(50);
+        }
+        ScenarioExecution.CheckCancellation();
+    }
+
+    private static bool NeedsMaximize(NativeMethods.RECT window, NativeMethods.RECT workArea)
+    {
+        var width = (long)workArea.Right - workArea.Left;
+        var height = (long)workArea.Bottom - workArea.Top;
+        return width > 0 && height > 0 &&
+            (((long)Math.Min(window.Right, workArea.Right) - Math.Max(window.Left, workArea.Left)) < width * 0.9 ||
+             ((long)Math.Min(window.Bottom, workArea.Bottom) - Math.Max(window.Top, workArea.Top)) < height * 0.9);
     }
 }

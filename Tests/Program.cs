@@ -12,6 +12,28 @@ static void Check(bool value, string message)
     Console.WriteLine($"PASS: {message}");
 }
 
+// Check sizing on secondary monitors without activating a real RDP session.
+var sizingCheck = typeof(RdpController).GetMethod("NeedsMaximize",
+    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+var rectType = sizingCheck.GetParameters()[0].ParameterType;
+object Rect(int left, int top, int right, int bottom)
+{
+    var rect = Activator.CreateInstance(rectType)!;
+    foreach (var (name, value) in new[] { ("Left", left), ("Top", top), ("Right", right), ("Bottom", bottom) })
+        rectType.GetField(name)!.SetValue(rect, value);
+    return rect;
+}
+bool NeedsMaximize(object window, object work) => (bool)sizingCheck.Invoke(null, [window, work])!;
+var workArea = Rect(-2000, -100, 0, 900);
+Check(NeedsMaximize(Rect(-2000, -100, -201, 900), workArea), "RDP: narrow window needs maximize");
+Check(NeedsMaximize(Rect(-2000, -100, 0, 799), workArea), "RDP: short window needs maximize");
+Check(!NeedsMaximize(Rect(-2000, -100, -200, 800), workArea), "RDP: exactly 90% on both axes stays unchanged");
+Check(!NeedsMaximize(Rect(-2000, -100, 0, 900), workArea), "RDP: large window stays unchanged");
+Check(NeedsMaximize(Rect(211, 1001, 1954, 2017), Rect(0, 0, 1920, 1040)), "RDP: large window mostly outside monitor needs maximize");
+Check(NeedsMaximize(Rect(-2201, -100, -201, 900), workArea), "RDP: window clipped on left needs maximize");
+Check(!NeedsMaximize(Rect(-2010, -110, 10, 910), workArea), "RDP: maximized border outside work area stays unchanged");
+Check(!NeedsMaximize(Rect(0, 0, 100, 100), Rect(0, 0, 0, 0)), "RDP: empty work area is ignored");
+
 var typingSettings = new TypingSettings();
 var tempo = new TypingTempo(typingSettings, new Random(42));
 var delays = Enumerable.Range(0, 10000).Select(_ => tempo.NextDelay()).ToArray();
@@ -76,7 +98,7 @@ using (var execution = new ScenarioExecution(CancellationToken.None))
 // Inspect packets without sending any keys to the active window.
 var keyFactory = typeof(KeyboardInputSender).GetMethod("CreateVirtualKeyInput",
     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-foreach (ushort key in new ushort[] { 0x24, 0x23, 0x2E }) // Home, End, Delete
+foreach (ushort key in new ushort[] { 0x21, 0x24, 0x23, 0x2E }) // PageUp, Home, End, Delete
 {
     foreach (var keyUp in new[] { false, true })
     {
@@ -85,7 +107,7 @@ foreach (ushort key in new ushort[] { 0x24, 0x23, 0x2E }) // Home, End, Delete
         var input = data.GetType().GetField("keyboardInput")!.GetValue(data)!;
         var flags = (uint)input.GetType().GetField("dwFlags")!.GetValue(input)!;
         var scan = (ushort)input.GetType().GetField("wScan")!.GetValue(input)!;
-        var expectedScan = key switch { 0x24 => 0x47, 0x23 => 0x4F, _ => 0x53 };
+        var expectedScan = key switch { 0x21 => 0x49, 0x24 => 0x47, 0x23 => 0x4F, _ => 0x53 };
         Check(flags == (keyUp ? 11u : 9u) && scan == expectedScan,
             $"RDP navigation key {key:X2}, keyUp={keyUp}: extended flag preserves navigation with NumLock");
     }

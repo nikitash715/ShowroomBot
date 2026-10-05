@@ -98,17 +98,17 @@ public sealed class KeyboardInputSender
         await Task.Delay(150, token);
     }
 
-    // Hold Alt across all Tab presses to select an MRU index instead of toggling two windows.
-    // mstsc must forward Windows key combinations to the remote computer.
+    // RDP's Alt+PageUp switches remote windows even in windowed mode.
+    // Hold Alt across all presses to select an MRU index instead of toggling two windows.
     public void SelectRemoteWindow(int index)
     {
         const ushort alt = 0x12;
-        const ushort tab = 0x09;
+        const ushort pageUp = 0x21;
         SendInputs(CreateVirtualKeyInput(alt, false));
         try
         {
             for (var i = 0; i < index; i++)
-                SendInputs(CreateVirtualKeyInput(tab, false), CreateVirtualKeyInput(tab, true));
+                SendInputs(CreateVirtualKeyInput(pageUp, false), CreateVirtualKeyInput(pageUp, true));
         }
         finally
         {
@@ -145,6 +145,7 @@ public sealed class KeyboardInputSender
         // can arrive as the numeric keypad's 7/1 instead of navigation.
         ushort scanCode = virtualKey switch
         {
+            0x21 => 0x49, // PageUp (RDP Alt+PageUp)
             0x24 => 0x47, // Home
             0x23 => 0x4F, // End
             0x2E => 0x53, // Delete
@@ -156,7 +157,7 @@ public sealed class KeyboardInputSender
         if (scanCode != 0)
         {
             var physical = CreateScanCodeInput(scanCode, keyUp);
-            if (virtualKey is 0x24 or 0x23 or 0x2E)
+            if (virtualKey is 0x21 or 0x24 or 0x23 or 0x2E)
                 physical.data.keyboardInput.dwFlags |= NativeMethods.KEYEVENTF_EXTENDEDKEY;
             return physical;
         }

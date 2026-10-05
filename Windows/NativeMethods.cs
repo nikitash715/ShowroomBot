@@ -5,6 +5,8 @@ namespace ShowroomBot.Windows;
 public static partial class NativeMethods
 {
     internal const int SW_RESTORE = 9;
+    internal const int SW_MAXIMIZE = 3;
+    internal const uint MONITOR_DEFAULTTONEAREST = 2;
     internal const uint INPUT_KEYBOARD = 1;
     internal const uint INPUT_MOUSE = 0;
     internal const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
@@ -50,6 +52,21 @@ public static partial class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsZoomed(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint dwFlags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint SendInput(
@@ -130,6 +147,15 @@ public static partial class NativeMethods
         public int Top;
         public int Right;
         public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MONITORINFO
+    {
+        public uint Size;
+        public RECT Monitor;
+        public RECT WorkArea;
+        public uint Flags;
     }
 
     [StructLayout(LayoutKind.Sequential)]
