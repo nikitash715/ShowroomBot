@@ -5,12 +5,91 @@ using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 using ShowroomBot.Configuration;
 using ShowroomBot.Rdp;
+using ShowroomBot.Core;
 
 static void Check(bool value, string message)
 {
     if (!value) throw new Exception(message);
     Console.WriteLine($"PASS: {message}");
 }
+
+var diagnosticsRoot = Path.Combine(Path.GetTempPath(), $"showroombot-cleanup-{Guid.NewGuid():N}");
+try
+{
+    var nowUtc = DateTime.UtcNow;
+    var cutoff = nowUtc.AddDays(-2);
+    DiagnosticsCleanup.Clean(diagnosticsRoot, nowUtc);
+    Check(!Directory.Exists(diagnosticsRoot), "diagnostics: missing directory is ignored");
+    Directory.CreateDirectory(diagnosticsRoot);
+    string DiagnosticFile(string relativePath, DateTime timestamp)
+    {
+        var path = Path.Combine(diagnosticsRoot, relativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "diagnostic");
+        File.SetLastWriteTimeUtc(path, timestamp);
+        return path;
+    }
+    var oldFile = DiagnosticFile("old.log", cutoff.AddSeconds(-1));
+    var boundaryFile = DiagnosticFile("boundary.log", cutoff);
+    var recentFile = DiagnosticFile("recent.log", nowUtc);
+    var nestedOld = DiagnosticFile("old-run/nested/old.png", cutoff.AddDays(-1));
+    Directory.SetLastWriteTimeUtc(Path.GetDirectoryName(nestedOld)!, cutoff.AddDays(-1));
+    Directory.SetLastWriteTimeUtc(Path.Combine(diagnosticsRoot, "old-run"), cutoff.AddDays(-1));
+    var mixedRecent = DiagnosticFile("mixed/recent.log", nowUtc);
+    var mixedOld = DiagnosticFile("mixed/old.log", cutoff.AddDays(-1));
+    Directory.SetLastWriteTimeUtc(Path.Combine(diagnosticsRoot, "mixed"), cutoff.AddDays(-1));
+    var lockedFile = DiagnosticFile("locked.log", cutoff.AddDays(-1));
+    using (var locked = new FileStream(lockedFile, FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        DiagnosticsCleanup.Clean(diagnosticsRoot, nowUtc);
+        Check(File.Exists(lockedFile), "diagnostics: locked file does not interrupt cleanup");
+    }
+    Check(!File.Exists(oldFile) && !File.Exists(nestedOld) &&
+        !Directory.Exists(Path.Combine(diagnosticsRoot, "old-run")), "diagnostics: old files and nested folders removed");
+    Check(File.Exists(boundaryFile) && File.Exists(recentFile), "diagnostics: retain last 48 hours including boundary");
+    Check(File.Exists(mixedRecent) && !File.Exists(mixedOld), "diagnostics: recent files in old folders preserved");
+    DiagnosticsCleanup.Clean(diagnosticsRoot, nowUtc);
+    Check(!File.Exists(lockedFile) && Directory.Exists(diagnosticsRoot), "diagnostics: cleanup can be repeated and retains root");
+}
+finally
+{
+    // This absolute path was created above under the temporary directory with a unique task prefix.
+    if (Directory.Exists(diagnosticsRoot)) Directory.Delete(diagnosticsRoot, recursive: true);
+}
+
+var idleClock = new ManualTimeProvider();
+var autoStart = new IdleAutoStartTimer(idleClock);
+var threshold = TimeSpan.FromMinutes(2);
+var longIdle = TimeSpan.FromHours(1);
+Check(!autoStart.ShouldStart(false, longIdle, threshold, false, true), "autostart: disabled");
+Check(!autoStart.ShouldStart(true, threshold - TimeSpan.FromSeconds(1), threshold, false, true),
+    "autostart: wait for idle threshold");
+Check(autoStart.ShouldStart(true, threshold, threshold, false, true), "autostart: starts at threshold");
+Check(!autoStart.ShouldStart(true, longIdle, threshold, true, true), "autostart: no concurrent scenario");
+Check(!autoStart.ShouldStart(true, longIdle, threshold, false, false), "autostart: wait for VPN/RDP");
+Check(autoStart.ShouldStart(true, longIdle, threshold, false, true), "autostart: infrastructure recovery permits start");
+autoStart.RestartInterval();
+var repeatedEarly = false;
+for (var second = 0; second < 120; second++)
+{
+    repeatedEarly |= autoStart.ShouldStart(true, longIdle, threshold, false, true);
+    idleClock.Advance(TimeSpan.FromSeconds(1));
+}
+Check(!repeatedEarly, "autostart: no repeat on any timer tick before new interval expires");
+Check(autoStart.ShouldStart(true, longIdle, threshold, false, true), "autostart: repeat after full new interval");
+Check(!autoStart.ShouldStart(true, TimeSpan.FromSeconds(1), threshold, false, true),
+    "autostart: user activity requires new idle interval");
+autoStart.RestartInterval();
+Check(!autoStart.ShouldStart(true, longIdle, threshold, false, true),
+    "autostart: completion/cancellation of next or manual scenario resets interval again");
+var demoController = new DemoController();
+demoController.StartDemo(automatic: true);
+Check(demoController.WasStartedAutomatically, "autostart: automatic marker");
+demoController.StopDemo();
+demoController.StartDemo(automatic: false);
+Check(!demoController.WasStartedAutomatically, "manual start: manual marker");
+demoController.StopDemo();
+Check(demoController.State == AppState.Waiting, "stop: returns to waiting");
 
 // Check sizing on secondary monitors without activating a real RDP session.
 var sizingCheck = typeof(RdpController).GetMethod("NeedsMaximize",
@@ -367,3 +446,11 @@ foreach (var screenshot in args.Where(arg => arg != "--expect-query-error"))
         Check(actual.Result != null, $"реальный снимок: видимая область результата {actual.Result}");
 }
 Console.WriteLine("Все проверки пройдены.");
+
+sealed class ManualTimeProvider : TimeProvider
+{
+    private long _timestamp;
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+    public override long GetTimestamp() => _timestamp;
+    public void Advance(TimeSpan elapsed) => _timestamp += elapsed.Ticks;
+}

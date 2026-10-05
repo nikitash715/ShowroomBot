@@ -13,10 +13,10 @@ internal static class Program
     private static void Main()
     {
         ApplicationConfiguration.Initialize();
+        DiagnosticsCleanup.Clean(Path.Combine(AppContext.BaseDirectory, "diagnostics"));
 
         var settingsService = new SettingsService();
         var settings = settingsService.Load();
-        settings.AutoStartDemo = false;
         settingsService.Save(settings);
 
         IReadOnlyList<ScenarioDescriptor> scenarios;

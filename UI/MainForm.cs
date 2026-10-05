@@ -16,6 +16,7 @@ public sealed class MainForm : Form
     private readonly RdpController _rdpController;
     private readonly DemoScenario _demoScenario;
     private readonly DemoController _demoController;
+    private readonly IdleAutoStartTimer _autoStartTimer = new();
     private readonly System.Windows.Forms.Timer _timer;
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _startMenuItem;
@@ -81,8 +82,7 @@ public sealed class MainForm : Form
         {
             Text = "Автоматически запускать при бездействии пользователя",
             AutoSize = true,
-            Checked = false,
-            Enabled = false
+            Checked = _settings.AutoStartDemo
         };
         _idleMinutesInput = new NumericUpDown
         {
@@ -245,6 +245,9 @@ public sealed class MainForm : Form
         buttonPanel.Controls.Add(_startButton);
         buttonPanel.Controls.Add(_stopButton);
         buttonPanel.Controls.Add(_openRdpButton);
+        var exitButton = new Button { Text = "Выход", AutoSize = true };
+        exitButton.Click += (_, _) => ExitApplication();
+        buttonPanel.Controls.Add(exitButton);
 
         panel.Controls.Add(buttonPanel, 0, 7);
         panel.SetColumnSpan(buttonPanel, 2);
@@ -296,6 +299,18 @@ public sealed class MainForm : Form
         }
 
         UpdateView();
+
+        if (!_isExiting && !IsDisposed && !_isCheckingInfrastructure &&
+            _scenarioComboBox.SelectedItem is ScenarioDescriptor &&
+            _autoStartTimer.ShouldStart(
+                _settings.AutoStartDemo,
+                _idleDetector.GetIdleTime(),
+                TimeSpan.FromMinutes(_settings.IdleMinutes),
+                _isTestScenarioRunning,
+                IsReadyForRdp()))
+        {
+            await StartDemoAsync(automatic: true);
+        }
     }
 
     private async Task RefreshInfrastructureStateAsync()
@@ -328,7 +343,7 @@ public sealed class MainForm : Form
         return TimeSpan.FromSeconds(Math.Max(1, seconds));
     }
 
-    private async Task StartDemoAsync()
+    private async Task StartDemoAsync(bool automatic = false)
     {
         if (_scenarioComboBox.SelectedItem is not ScenarioDescriptor scenario)
         {
@@ -346,8 +361,8 @@ public sealed class MainForm : Form
             return;
         }
 
-        _demoController.StartDemo(automatic: false);
         _isTestScenarioRunning = true;
+        _demoController.StartDemo(automatic);
         using var cancellation = new CancellationTokenSource();
         _scenarioCancellation = cancellation;
         UpdateView();
@@ -377,6 +392,7 @@ public sealed class MainForm : Form
         finally
         {
             _scenarioCancellation = null;
+            _autoStartTimer.RestartInterval();
             _isTestScenarioRunning = false;
             _demoController.StopDemo();
             UpdateView();
