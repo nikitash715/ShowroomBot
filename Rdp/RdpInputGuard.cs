@@ -17,6 +17,8 @@ internal sealed class RdpInputGuard : IDisposable
 
     public static void Check()
     {
+        // Never let a previous remote step impose an RDP foreground check on local input.
+        if (ScenarioExecution.Current?.ExecutionContext == ScenarioExecutionContext.Local) return;
         var handle = RequiredWindow.Value ?? ScenarioExecution.Current?.RdpWindow;
         if (handle.HasValue) RdpController.EnsureSessionForeground(handle.Value);
     }

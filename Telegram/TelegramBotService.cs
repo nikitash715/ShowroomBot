@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Channels;
 using ShowroomBot.Configuration;
 using ShowroomBot.Core.Scenarios;
+using ShowroomBot.Mail;
 
 namespace ShowroomBot.Telegram;
 
@@ -183,6 +184,16 @@ public sealed class TelegramBotService
                 ScenarioExecution.WriteLog(path, $"Telegram: не удалось отправить уведомление ({notification.Outcome}).");
         }
         catch (Exception) { /* Notification diagnostics cannot affect automation. */ }
+    }
+
+    public Task SendMailAsync(OutlookMail mail, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if (!IsEnabled)
+            throw new InvalidOperationException("CheckMail: включите и настройте Telegram перед отправкой новых писем.");
+        // Await delivery of every part. Unlike lifecycle events this is not a background queue
+        // and does not depend on NotifyDemoEvents; the caller persists only confirmed delivery.
+        return SendTextAsync($"Новое письмо Outlook\nОт: {mail.Sender}\nТема: {mail.Subject}\n\n{mail.Body}", token);
     }
 
     private async Task SendTextAsync(string text, CancellationToken token)

@@ -1,0 +1,19 @@
+name: "Открыть 1с, проверить почту"
+steps:
+  - type: Open1C
+    executable: 'C:\Program Files\1cv8\common\1cestart.exe'
+    server: '10.40.11.50'
+    database: 'dev_erp_sakharov'
+    user: 'Сахаров Никита Борисович'
+    password: '0304'
+    panelColor: '#C0DCC0'
+
+  - type: Open1CCommand
+    section: "Закупки"
+    command: "Сформировать заказы поставщикам"
+    fallbackLink: 'e1c://server/10.40.11.50/dev_erp_sakharov#e1cib/command/Обработка.рткФормированиеЗаказовПоставщикам.Команда.рткОткрытьАРМФЗП' # Альтернативное открытие через Shift+F11.
+
+  - type: Wait # Пауза между шагами с поддержкой отмены сценария.
+    seconds: 5 # Длительность ожидания в секундах; обязательное положительное целое число.
+
+  - type: CheckMail

@@ -6,6 +6,27 @@ namespace ShowroomBot.Rdp;
 
 public sealed class RdpController(string defaultHost = "")
 {
+    public static void MinimizeForLocalStep()
+    {
+        ScenarioExecution.Perform(() =>
+        {
+            // Enumerate actual local RDP windows, independent of host/title and connection state.
+            if (!NativeMethods.EnumWindows((handle, _) =>
+            {
+                var className = new System.Text.StringBuilder(256);
+                NativeMethods.GetClassName(handle, className, className.Capacity);
+                if (className.ToString() == "TscShellContainerClass" && NativeMethods.IsWindowVisible(handle))
+                    NativeMethods.ShowWindow(handle, 6); // SW_MINIMIZE; does not disconnect the session.
+                return true;
+            }, IntPtr.Zero))
+                throw new InvalidOperationException("Не удалось свернуть окна RDP перед локальным шагом.");
+            var foregroundClass = new System.Text.StringBuilder(256);
+            NativeMethods.GetClassName(NativeMethods.GetForegroundWindow(), foregroundClass, foregroundClass.Capacity);
+            if (foregroundClass.ToString() == "TscShellContainerClass")
+                throw new InvalidOperationException("RDP остался на переднем плане перед локальным шагом.");
+        });
+    }
+
     public async Task<IntPtr> OpenOrActivateAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();

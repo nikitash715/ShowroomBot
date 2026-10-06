@@ -7,12 +7,15 @@ public sealed class ScenarioRunner
 {
     private readonly ScenarioStepFactory _stepFactory;
     private readonly Func<string, string> _captureDesktop;
+    private readonly Action _prepareLocal;
     public event Action<ScenarioNotification>? ScenarioChanged;
 
-    public ScenarioRunner(ScenarioStepFactory stepFactory, Func<string, string>? captureDesktop = null)
+    public ScenarioRunner(ScenarioStepFactory stepFactory, Func<string, string>? captureDesktop = null,
+        Action? prepareLocal = null)
     {
         _stepFactory = stepFactory;
         _captureDesktop = captureDesktop ?? new WindowScreenshotService().CaptureDesktop;
+        _prepareLocal = prepareLocal ?? Rdp.RdpController.MinimizeForLocalStep;
     }
 
     public async Task RunAsync(
@@ -35,6 +38,10 @@ public sealed class ScenarioRunner
                 timer.Restart();
                 execution.Write($"Начало шага: {stepType}");
                 var step = _stepFactory.Create(definition);
+                execution.ExecutionContext = definition.ExecutionContext;
+                execution.Write($"Контекст шага: {execution.ExecutionContext}");
+                if (execution.ExecutionContext == ScenarioExecutionContext.Local)
+                    _prepareLocal();
                 await step.ExecuteAsync(execution.Token);
                 execution.Token.ThrowIfCancellationRequested();
                 execution.Write($"Шаг завершён: {stepType}; затрачено {timer.Elapsed.TotalSeconds:F3} с");

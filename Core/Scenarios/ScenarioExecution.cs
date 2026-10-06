@@ -14,6 +14,7 @@ public sealed class ScenarioExecution : IDisposable
     public CancellationToken Token { get; }
     public string DirectoryPath { get; }
     internal IntPtr RdpWindow { get; set; }
+    public ScenarioExecutionContext ExecutionContext { get; internal set; }
     public string LogPath => Path.Combine(DirectoryPath, "scenario.log");
 
     public ScenarioExecution(CancellationToken cancellationToken)

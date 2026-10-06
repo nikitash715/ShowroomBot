@@ -1,0 +1,50 @@
+autoStartDemo: true
+idleMinutes: 3
+
+telegram:
+  # Включайте только в локальном config.yaml; изменения требуют перезапуска.
+  enabled: true
+  # Присылать уведомления о запуске и результате сценариев в Telegram.
+  notifyDemoEvents: true
+  botToken: '8578727760:AAGkOKDyIlk17AsJ1bXN8vkn_WAVVcJNXmQ'
+  allowedUserId: 356475835
+
+vpn:
+  connectionNames:
+    - KLEVER VPN
+    - KLEVER VPN2
+  checkIntervalSeconds: 5
+
+rdp:
+  host: 192.168.174.132
+  port: 3389
+  userName: KLO06001@dpc.msmash.ru
+  checkIntervalSeconds: 5
+  connectTimeoutSeconds: 2
+
+automation:
+  # Общие настройки для всех шагов, в том числе составных.
+  typing:
+    # Минимальная задержка между символами, мс: 80 сохраняет прежнюю максимальную скорость.
+    minimumDelayMilliseconds: 1
+    # Во сколько раз может замедляться темп; минимум 1 (ускорение выше максимума запрещено).
+    slowdownFactor: 2
+    # Длина участка плавного изменения темпа в символах; минимум 2.
+    tempoSegmentCharacters: 30
+    # Дополнительная случайная задержка 0..значение, мс.
+    jitterMilliseconds: 15
+    # Вероятность редкой паузы после символа, 0..1; 0 отключает паузы.
+    pauseProbability: 0.008
+    # Границы длительности редкой паузы, мс (примерно одна секунда).
+    pauseMinimumMilliseconds: 800
+    pauseMaximumMilliseconds: 1200
+  mouse:
+    # Базовая длительность перемещения и интервал кадров, мс; оба больше 0.
+    movementDurationMilliseconds: 300
+    stepDelayMilliseconds: 10
+    # Кривизна как доля расстояния, 0..0.2; 0 отключает изгиб.
+    curvatureRatio: 0.08
+    # Максимум небольших отклонений от кривой, пиксели, 0..10; цель всегда точная.
+    deviationPixels: 2
+    # Случайное изменение длительности на долю базового значения, 0..0.9.
+    durationVariation: 0.25

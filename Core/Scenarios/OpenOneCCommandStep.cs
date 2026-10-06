@@ -10,18 +10,20 @@ public sealed class OpenOneCCommandStep : IScenarioStep
     private readonly ScenarioStepDefinition _definition;
     private readonly RdpController _rdp;
     private readonly MouseInputSender _mouse;
+    private readonly KeyboardInputSender _keyboard;
     private readonly WindowScreenshotService _screenshots;
     private readonly OneCSectionRecognizer _recognizer;
 
     public OpenOneCCommandStep(ScenarioStepDefinition definition, RdpController rdp,
         MouseInputSender mouse, WindowScreenshotService screenshots,
-        OneCSectionRecognizer recognizer)
+        OneCSectionRecognizer recognizer, KeyboardInputSender keyboard)
     {
         _definition = definition;
         _rdp = rdp;
         _mouse = mouse;
         _screenshots = screenshots;
         _recognizer = recognizer;
+        _keyboard = keyboard;
     }
 
     public string Name => $"Открыть команду 1С: {_definition.Command}";
@@ -35,6 +37,136 @@ public sealed class OpenOneCCommandStep : IScenarioStep
             _definition.SectionOpenTimeoutSeconds is <= 0 or > 5)
             throw new InvalidOperationException("Open1CCommand: sectionOpenTimeoutSeconds должен быть 1..5; commandTimeoutSeconds и pollIntervalMs — положительными.");
 
+        try
+        {
+            await CloseBlockingDialogsAsync(cancellationToken);
+            await OpenFromMenuAsync(cancellationToken);
+        }
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested &&
+            !string.IsNullOrWhiteSpace(_definition.FallbackLink) &&
+            exception is InvalidOperationException or TimeoutException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ScenarioExecution.Log($"Открытие через меню не удалось: {exception.Message}; открываем через Shift+F11.");
+            await CloseBlockingDialogsAsync(cancellationToken);
+            Activate(cancellationToken);
+            await _keyboard.SendOpenLinkAsync(cancellationToken);
+            await Task.Delay(500, cancellationToken);
+            Activate(cancellationToken);
+            await _keyboard.SendControlShortcutAsync(0x1E, cancellationToken);
+            await _keyboard.SendTextAsync(_definition.FallbackLink, cancellationToken);
+            await SubmitLinkAsync(cancellationToken);
+        }
+    }
+
+    private async Task CloseBlockingDialogsAsync(CancellationToken token)
+    {
+        var directory = ScenarioExecution.Current?.DirectoryPath ?? Path.Combine(AppContext.BaseDirectory, "diagnostics");
+        Activate(token);
+        await _keyboard.SendKeyAsync(0x1B, token);
+        ScenarioExecution.Log("Escape перед выполнением команды: закрытие текущей формы или всплывающего окна.");
+        await Task.Delay(500, token);
+        var clearFrames = 0;
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+            var path = _screenshots.CaptureClientArea(Activate(token), directory);
+            var lines = await _recognizer.ReadLinesAsync(path, token);
+            if (FindDismissButton(lines) is Rectangle button)
+            {
+                clearFrames = 0;
+                var point = new Point(button.Left + button.Width / 2, button.Top + button.Height / 2);
+                await _mouse.MoveToAsync(_screenshots.ClientToScreen(Activate(token), point), token);
+                token.ThrowIfCancellationRequested();
+                _mouse.ClickLeft();
+                ScenarioExecution.Log("Закрытие вопроса после Escape: «Не сохранять» / «Нет» / «ОК».");
+            }
+            else if (HasLinkDialog(lines))
+            {
+                clearFrames = 0;
+                Activate(token);
+                await _keyboard.SendKeyAsync(0x1B, token);
+            }
+            else if (HasSaveQuestion(lines))
+                throw new InvalidOperationException("Open1CCommand: вопрос о сохранении найден, но кнопка отказа не распознана однозначно.");
+            else if (++clearFrames >= 2) return;
+            await Task.Delay(500, token);
+        }
+        throw new InvalidOperationException("Open1CCommand: не удалось закрыть всплывающее окно перед выполнением команды.");
+    }
+
+    private static string DialogText(string text) => text.Trim().Replace("&", "").TrimEnd('.', '?', ':', '!').ToLowerInvariant();
+
+    public static bool HasSaveQuestion(IReadOnlyList<RecognizedText> lines) =>
+        lines.Any(line => DialogText(line.Text).Contains("сохранить") &&
+            (line.Text.Contains('?') || DialogText(line.Text).Contains("изменени"))) ||
+        lines.Any(line => DialogText(line.Text) == "не сохранять");
+
+    public static Rectangle? FindDismissButton(IReadOnlyList<RecognizedText> lines)
+    {
+        Rectangle? Unique(params string[] labels)
+        {
+            var matches = lines.Where(line => labels.Contains(DialogText(line.Text)))
+                .Select(line => line.Bounds).Distinct().ToArray();
+            return matches.Length == 1 ? matches[0] : null;
+        }
+
+        if (lines.Any(line => DialogText(line.Text) == "не сохранять"))
+            return Unique("не сохранять");
+        // Never accept a save question with OK/Yes: explicitly discard changes.
+        if (HasSaveQuestion(lines)) return Unique("нет");
+        return Unique("ок", "ok", "оk", "oк");
+    }
+
+    public static bool HasLinkDialog(IReadOnlyList<RecognizedText> lines) =>
+        lines.Any(line => line.Text.Trim().Equals("Переход по ссылке", StringComparison.OrdinalIgnoreCase));
+
+    private async Task SubmitLinkAsync(CancellationToken token)
+    {
+        var directory = ScenarioExecution.Current?.DirectoryPath ?? Path.Combine(AppContext.BaseDirectory, "diagnostics");
+        var timer = Stopwatch.StartNew();
+        var clicked = false;
+        while (timer.Elapsed < TimeSpan.FromSeconds(15))
+        {
+            token.ThrowIfCancellationRequested();
+            var path = _screenshots.CaptureClientArea(Activate(token), directory);
+            var lines = await _recognizer.ReadLinesAsync(path, token);
+            var dialog = HasLinkDialog(lines);
+            if (clicked && !dialog)
+            {
+                ScenarioExecution.Log($"Диалог перехода по ссылке закрыт: {_definition.Command}");
+                return;
+            }
+            if (!clicked && FindLinkGoButton(lines) is Rectangle button)
+            {
+                var point = new Point(button.Left + button.Width / 2, button.Top + button.Height / 2);
+                await _mouse.MoveToAsync(_screenshots.ClientToScreen(Activate(token), point), token);
+                token.ThrowIfCancellationRequested();
+                _mouse.ClickLeft();
+                clicked = true;
+                ScenarioExecution.Log("Клик по кнопке «Перейти» в диалоге перехода по ссылке.");
+            }
+            await Task.Delay(300, token);
+        }
+        throw new TimeoutException(clicked
+            ? "Open1CCommand: после клика «Перейти» диалог перехода по ссылке не закрылся."
+            : "Open1CCommand: кнопка «Перейти» в диалоге перехода по ссылке не найдена.");
+    }
+
+    public static Rectangle? FindLinkGoButton(IReadOnlyList<RecognizedText> lines)
+    {
+        var titles = lines.Where(line => line.Text.Trim().Equals("Переход по ссылке", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (titles.Length != 1) return null;
+        var title = titles[0].Bounds;
+        var buttons = lines.Where(line => line.Text.Trim().Equals("Перейти", StringComparison.OrdinalIgnoreCase) &&
+            line.Bounds.Top > title.Bottom && line.Bounds.Top - title.Bottom < 250 &&
+            line.Bounds.Left >= title.Left && line.Bounds.Left - title.Left < 250).Select(line => line.Bounds).Distinct().ToArray();
+        // ReadLinesAsync includes both complete lines and individual words.
+        return buttons.Length == 1 ? buttons[0] : null;
+    }
+
+    private async Task OpenFromMenuAsync(CancellationToken cancellationToken)
+    {
         // The existing navigation always clicks the recognized section, including an already open one.
         var sectionStep = new OpenOneCSectionStep(_definition, _rdp, _mouse, _screenshots, _recognizer);
         await sectionStep.ExecuteAsync(cancellationToken);

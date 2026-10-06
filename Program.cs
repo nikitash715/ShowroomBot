@@ -5,6 +5,7 @@ using ShowroomBot.Rdp;
 using ShowroomBot.UI;
 using ShowroomBot.Windows;
 using ShowroomBot.Telegram;
+using ShowroomBot.Mail;
 using System.Net.Http;
 
 namespace ShowroomBot;
@@ -41,8 +42,12 @@ internal static class Program
         var rdpAvailabilityChecker = new RdpAvailabilityChecker();
         var rdpController = new RdpController(settings.Rdp.Host);
         var keyboardInputSender = new KeyboardInputSender(settings.Automation.Typing);
+        TelegramBotService? telegram = null;
+        var checkMail = new CheckMailStep(new LocalOutlookInboxReader(), new MailDeliveryHistory(),
+            (mail, token) => (telegram ?? throw new InvalidOperationException("Telegram ещё не инициализирован."))
+                .SendMailAsync(mail, token));
         var scenarioStepFactory = new ScenarioStepFactory(rdpController, keyboardInputSender,
-            new MouseInputSender(settings.Automation.Mouse), new WindowScreenshotService(), new OneCSectionRecognizer());
+            new MouseInputSender(settings.Automation.Mouse), new WindowScreenshotService(), new OneCSectionRecognizer(), checkMail);
         var scenarioRunner = new ScenarioRunner(scenarioStepFactory);
         var demoScenario = new DemoScenario(scenarioRunner);
         var demoController = new DemoController();
@@ -59,7 +64,7 @@ internal static class Program
             demoController);
         using var telegramCancellation = new CancellationTokenSource();
         using var telegramHttp = new HttpClient();
-        var telegram = new TelegramBotService(telegramHttp, settings.Telegram,
+        telegram = new TelegramBotService(telegramHttp, settings.Telegram,
             mainForm.StartDemoFromTelegramAsync, mainForm.StopDemoFromTelegramAsync,
             new WindowScreenshotService().CaptureDesktop, mainForm.ConfigureAutoStartFromTelegramAsync);
         if (telegram.IsEnabled) scenarioRunner.ScenarioChanged += telegram.QueueNotification;

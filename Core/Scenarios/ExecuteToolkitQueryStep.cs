@@ -41,7 +41,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
                     SectionOpenTimeoutSeconds = definition.SectionOpenTimeoutSeconds,
                     CommandTimeoutSeconds = definition.CommandTimeoutSeconds, PollIntervalMs = definition.PollIntervalMs
                 };
-                await new OpenOneCCommandStep(navigation, rdp, mouse, screenshots, sectionRecognizer).ExecuteAsync(token);
+                await new OpenOneCCommandStep(navigation, rdp, mouse, screenshots, sectionRecognizer, keyboard).ExecuteAsync(token);
             }
             layout = await WaitForEditor(token);
             await Click(layout.TextTab!.Value, token);
@@ -123,6 +123,8 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
 
     private void Validate()
     {
+        if (definition.ScrollSpeed is < 1 or > 10)
+            throw new InvalidOperationException("Toolkit: scrollSpeed должен быть целым числом от 1 до 10.");
         if (!string.Equals(definition.QueryInputMode, "typing", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(definition.QueryInputMode, "paste", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Toolkit: queryInputMode должен быть typing (набор) или paste (вставка).");
@@ -183,6 +185,9 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         timeout.CancelAfter(TimeSpan.FromSeconds(definition.ScrollTimeoutSeconds));
         var unchanged = 0;
         var moved = false;
+        ScenarioExecution.Log($"Toolkit: скорость прокрутки {definition.ScrollSpeed}; " +
+            $"делений {definition.ScrollNotches}, пауза {definition.ScrollPauseMs} мс; " +
+            $"лимиты: {definition.MaxScrollAttempts} попыток, {definition.ScrollTimeoutSeconds} с.");
         try
         {
             var initialArea = layout.Result ?? throw new InvalidOperationException("Toolkit: нижняя таблица результата исчезла.");
@@ -196,8 +201,13 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
                 timeout.Token.ThrowIfCancellationRequested();
                 var area = layout.Result ?? throw new InvalidOperationException("Toolkit: нижняя таблица результата исчезла.");
                 var point = new Point(area.Left + area.Width * 3 / 5, area.Top + area.Height / 2);
-                await Move(point, timeout.Token);
-                await Task.Delay(Math.Min(200, definition.ScrollPauseMs), timeout.Token);
+                var screenPoint = screenshots.ClientToScreen(Activate(timeout.Token), point);
+                if (!NativeMethods.GetCursorPos(out var cursor) || cursor.X != screenPoint.X || cursor.Y != screenPoint.Y)
+                {
+                    await mouse.MoveToAsync(screenPoint, timeout.Token);
+                    // Allow hover effects to settle only when the pointer actually moved.
+                    await Task.Delay(Math.Min(200, definition.ScrollPauseMs), timeout.Token);
+                }
                 var beforePath = Capture(timeout.Token);
                 if (ToolkitConsoleRecognizer.ScrollbarAtBottom(beforePath, area))
                 {

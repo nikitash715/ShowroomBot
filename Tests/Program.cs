@@ -14,6 +14,31 @@ static void Check(bool value, string message)
 }
 
 await RdpChecks.RunAsync(Check);
+await CheckMailChecks.RunAsync(Check);
+var linkTitle = new RecognizedText("Переход по ссылке", new Rectangle(10, 10, 200, 20));
+var linkGo = new RecognizedText("Перейти", new Rectangle(90, 100, 60, 20));
+Check(OpenOneCCommandStep.HasLinkDialog([linkTitle, linkGo]), "Link: recognize blocking dialog before command");
+Check(!OpenOneCCommandStep.HasLinkDialog([linkGo]), "Link: ordinary form is not a link dialog");
+var saveQuestion = new RecognizedText("Сохранить изменения?", new Rectangle(10, 40, 200, 20));
+var discard = new RecognizedText("Не сохранять", new Rectangle(100, 100, 100, 20));
+var no = new RecognizedText("Нет", new Rectangle(210, 100, 40, 20));
+var ok = new RecognizedText("ОК", new Rectangle(260, 100, 40, 20));
+Check(OpenOneCCommandStep.FindDismissButton([saveQuestion, discard, no, ok, discard]) == discard.Bounds,
+    "Dismiss: prefer discard over No and OK; deduplicate OCR");
+Check(OpenOneCCommandStep.FindDismissButton([saveQuestion, no, ok]) == no.Bounds,
+    "Dismiss: No rejects saving");
+Check(OpenOneCCommandStep.FindDismissButton([saveQuestion, ok]) is null,
+    "Dismiss: never accept saving with OK");
+Check(OpenOneCCommandStep.FindDismissButton([ok]) == ok.Bounds, "Dismiss: acknowledge ordinary dialog");
+Check(OpenOneCCommandStep.FindDismissButton([ok, ok with { Bounds = new Rectangle(320, 100, 40, 20) }]) is null,
+    "Dismiss: ambiguous OK blocks click");
+Check(OpenOneCCommandStep.HasLinkDialog([linkTitle with { Text = "  ПЕРЕХОД ПО ССЫЛКЕ  " }]),
+    "Link: dialog detection ignores case and surrounding whitespace");
+Check(OpenOneCCommandStep.FindLinkGoButton([linkTitle, linkGo, linkGo]) == linkGo.Bounds,
+    "Link: find Go beneath dialog title and deduplicate OCR line/word");
+Check(OpenOneCCommandStep.FindLinkGoButton([linkGo]) is null, "Link: no click without dialog title");
+Check(OpenOneCCommandStep.FindLinkGoButton([linkTitle, linkGo, linkGo with { Bounds = new Rectangle(180, 100, 60, 20) }]) is null,
+    "Link: ambiguous Go buttons block click");
 var diagnosticsRoot = Path.Combine(Path.GetTempPath(), $"showroombot-cleanup-{Guid.NewGuid():N}");
 try
 {
@@ -347,7 +372,8 @@ var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../
 var yaml = File.ReadAllText(Path.Combine(root, "Examples/ScenarioReference.example.yaml"));
 var definition = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build()
     .Deserialize<ScenarioDefinition>(yaml);
-Check(definition.Steps.Count == 5 && definition.Steps[0].Type == "Open1C" &&
+Check(definition.Steps.Count == 6 && definition.Steps[0].Type == "Open1C" &&
+    definition.Steps[5].Type == "CheckMail" && definition.Steps[5].ExecutionContext == ScenarioExecutionContext.Local &&
     definition.Steps[3].Type == "ExecuteToolkitQuery" && definition.Steps[3].ScrollNotches == 2,
     "пример YAML десериализуется с параметрами шага");
 Check(definition.Steps[3].QueryInputMode == "typing", "справочник использует набор по умолчанию");
@@ -360,12 +386,47 @@ Check(!string.IsNullOrWhiteSpace(definition.Steps[0].Executable) &&
     string.IsNullOrEmpty(definition.Steps[3].Password),
     "параметры запуска базы задаются только в отдельном Open1C");
 var scenarioDeserializer = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
+foreach (var speed in Enumerable.Range(1, 10))
+{
+    var scrolling = scenarioDeserializer.Deserialize<ScenarioStepDefinition>($"scrollSpeed: {speed}\n");
+    Check(scrolling.ScrollSpeed == speed && scrolling.ScrollNotches is >= 1 and <= 10 &&
+        scrolling.ScrollPauseMs is >= 100 and <= 1500 && scrolling.ScrollUnchangedAttempts == 4 &&
+        scrolling.MaxScrollAttempts == 300 && scrolling.ScrollTimeoutSeconds == 660,
+        $"скорость {speed}: темп меняется независимо от защитных лимитов");
+    if (speed > 1)
+    {
+        var previous = new ScenarioStepDefinition { ScrollSpeed = speed - 1 };
+        Check(scrolling.ScrollNotches >= previous.ScrollNotches && scrolling.ScrollPauseMs < previous.ScrollPauseMs,
+            $"скорость {speed} быстрее предыдущей");
+    }
+}
+var ignored = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance)
+    .IgnoreUnmatchedProperties().Build().Deserialize<ScenarioStepDefinition>(
+        "scrollSpeed: 10\nscrollNotches: 3\nscrollPauseMs: 900\nscrollTimeoutSeconds: 1\nmaxScrollAttempts: 1\nscrollUnchangedAttempts: 2\n");
+Check(ignored.ScrollNotches == 10 && ignored.ScrollPauseMs == 100 && ignored.MaxScrollAttempts == 1 &&
+    ignored.ScrollTimeoutSeconds == 1 && ignored.ScrollUnchangedAttempts == 2,
+    "YAML настраивает защитные лимиты независимо от скорости; размер колеса и пауза определяются скоростью");
+foreach (var speed in new[] { 1, 10 })
+{
+    var configured = scenarioDeserializer.Deserialize<ScenarioStepDefinition>(
+        $"maxScrollAttempts: 120\nscrollTimeoutSeconds: 900\nscrollUnchangedAttempts: 6\nscrollSpeed: {speed}\n");
+    Check(configured.MaxScrollAttempts == 120 && configured.ScrollTimeoutSeconds == 900 && configured.ScrollUnchangedAttempts == 6,
+        "явные лимиты YAML сохраняются для медленной и быстрой прокрутки");
+}
+foreach (var speed in new[] { 0, 11 })
+{
+    var invalid = new ExecuteToolkitQueryStep(new ScenarioStepDefinition
+        { QueryFile = definition.Steps[3].QueryFile, ScrollSpeed = speed }, null!, null!, null!, null!, null!);
+    try { await invalid.ExecuteAsync(); throw new Exception("Недопустимая скорость принята"); }
+    catch (InvalidOperationException error) when (error.Message.Contains("scrollSpeed"))
+    { Console.WriteLine("PASS: скорость вне диапазона отклонена до действий в RDP"); }
+}
 var minimalStep = scenarioDeserializer.Deserialize<ScenarioStepDefinition>("type: Open1C\n");
 Check(minimalStep.AfterActivationDelayMs == 1000 && minimalStep.AfterRunDialogDelayMs == 500 &&
     minimalStep.WindowSwitchDelayMs == 700 && minimalStep.PollIntervalMs == 30000 && minimalStep.ScrollPauseMs == 700 &&
     minimalStep.ReadyTimeoutSeconds == 420 && minimalStep.SectionOpenTimeoutSeconds == 5 && minimalStep.CommandTimeoutSeconds == 15 &&
     minimalStep.ConsoleTimeoutSeconds == 30 && minimalStep.QueryInputTimeoutSeconds == 20 &&
-    minimalStep.QueryTimeoutSeconds == 120 && minimalStep.ScrollTimeoutSeconds == 300,
+    minimalStep.QueryTimeoutSeconds == 120 && minimalStep.ScrollTimeoutSeconds == 660,
     "YAML без параметров времени получает задержки и таймауты из кода");
 Check(new[] { "Open1CCommand", "ExecuteToolkitQuery" }.All(type =>
     scenarioDeserializer.Deserialize<ScenarioStepDefinition>($"type: {type}\n").PollIntervalMs == 500),
@@ -377,12 +438,12 @@ Check(scenarioDeserializer.Deserialize<ScenarioStepDefinition>(
 Check(definition.Steps[0].ReadyTimeoutSeconds == 420 && definition.Steps[0].PollIntervalMs == 30000,
     "пример Open1C ожидает запуск 7 минут с проверкой каждые 30 секунд");
 var overriddenStep = scenarioDeserializer.Deserialize<ScenarioStepDefinition>(
-    "type: Open1C\nafterActivationDelayMs: 0\nafterRunDialogDelayMs: 123\npollIntervalMs: 250\nscrollTimeoutSeconds: 180\n");
+    "type: Open1C\nafterActivationDelayMs: 0\nafterRunDialogDelayMs: 123\npollIntervalMs: 250\n");
 Check(overriddenStep.AfterActivationDelayMs == 0 && overriddenStep.AfterRunDialogDelayMs == 123 &&
-    overriddenStep.PollIntervalMs == 250 && overriddenStep.ScrollTimeoutSeconds == 180,
+    overriddenStep.PollIntervalMs == 250,
     "явные параметры времени переопределяют значения по умолчанию, включая нулевую паузу");
 Check(definition.Steps.Select(step => step.Type).SequenceEqual(
-    new[] { "Open1C", "Open1CSection", "Open1CCommand", "ExecuteToolkitQuery", "Wait" }), "справочник содержит все типы шагов");
+    new[] { "Open1C", "Open1CSection", "Open1CCommand", "ExecuteToolkitQuery", "Wait", "CheckMail" }), "справочник содержит все типы шагов");
 var stepFactory = new ScenarioStepFactory(null!, null!, null!, null!, null!);
 Check(definition.Steps[4].Seconds == 5 && stepFactory.Create(definition.Steps[4]) is WaitStep,
     "пример Wait десериализуется и создаётся фабрикой");
@@ -457,7 +518,42 @@ try
     Check(ToolkitConsoleRecognizer.ScrollbarAtBottom(bitmapPath, region), "нижнее положение ползунка распознаётся");
 }
 finally { File.Delete(bitmapPath); }
-foreach (var screenshot in args.Where(arg => arg != "--expect-query-error"))
+foreach (var input in args.Where(arg => arg.StartsWith("--section-screenshot=")))
+{
+    var source = input["--section-screenshot=".Length..];
+    var scratch = Path.Combine(Path.GetTempPath(), "section-regression-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(scratch);
+    try
+    {
+        var screenshot = Path.Combine(scratch, "section.png");
+        File.Copy(source, screenshot);
+        var recognizer = new OneCSectionRecognizer();
+        var shortName = await recognizer.RecognizeAsync(screenshot, "Закупки", CancellationToken.None);
+        var fullName = await recognizer.RecognizeAsync(screenshot, "Корпоративные закупки", CancellationToken.None);
+        Check(shortName.TextBounds is null && fullName.TextBounds is not null,
+            "Section: actual failure screenshot rejects substring and recognizes complete label");
+    }
+    finally { Directory.Delete(scratch, true); }
+}
+foreach (var input in args.Where(arg => arg.StartsWith("--command-screenshot=")))
+{
+    var scratch = Path.Combine(Path.GetTempPath(), "command-regression-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(scratch);
+    try
+    {
+        var screenshot = Path.Combine(scratch, "command.png");
+        File.Copy(input["--command-screenshot=".Length..], screenshot);
+        var recognizer = new OneCSectionRecognizer();
+        var actual = await recognizer.RecognizeCommandAsync(screenshot, "Сформировать заказы поставщикам", CancellationToken.None);
+        Check(actual.Command is Rectangle bounds && actual.Workspace.Contains(bounds) &&
+            bounds.Left >= 270 && bounds.Right <= 510 && bounds.Top >= 280 && bounds.Bottom <= 310,
+            $"Command: actual failure screenshot recognizes link at original coordinates: {actual.Command}");
+        var absent = await recognizer.RecognizeCommandAsync(screenshot, "Сформировать заказы покупателям", CancellationToken.None);
+        Check(absent.Command is null, "Command: different command is not accepted");
+    }
+    finally { Directory.Delete(scratch, true); }
+}
+foreach (var screenshot in args.Where(arg => arg != "--expect-query-error" && !arg.StartsWith("--section-screenshot=") && !arg.StartsWith("--command-screenshot=")))
 {
     var actual = await new ToolkitConsoleRecognizer(new OneCSectionRecognizer()).RecognizeAsync(screenshot, CancellationToken.None);
     Check(actual.Editor != null && actual.Execute != null,

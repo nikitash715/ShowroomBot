@@ -39,6 +39,18 @@ public sealed class KeyboardInputSender
         await Task.Delay(100, token);
     }
 
+    public async Task SendOpenLinkAsync(CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        SendInputs(CreateVirtualKeyInput(0x10, false)); // Shift
+        try
+        {
+            await Task.Delay(80, token);
+            await SendKeyAsync(0x7A, token); // F11
+        }
+        finally { SendInputsCore([CreateVirtualKeyInput(0x10, true)]); }
+        await Task.Delay(100, token);
+    }
     public async Task ClearAutoIndentAsync(CancellationToken token)
     {
         // Home twice also handles editors with a smart Home (first non-space character).
@@ -152,6 +164,7 @@ public sealed class KeyboardInputSender
             0x0D => 0x1C, // Enter
             0x08 => 0x0E, // Backspace
             0x1B => 0x01, // Escape
+            0x7A => 0x57, // F11
             _ => 0
         };
         if (scanCode != 0)

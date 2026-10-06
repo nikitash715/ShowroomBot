@@ -4,14 +4,20 @@ public sealed class ScenarioDefinition
 {
     public string Name { get; set; } = string.Empty;
     public List<ScenarioStepDefinition> Steps { get; set; } = [];
+
+    [YamlDotNet.Serialization.YamlIgnore]
+    public bool RequiresRdp => Steps.Any(step => step.ExecutionContext == ScenarioExecutionContext.Rdp);
 }
 
 public sealed class ScenarioStepDefinition
 {
     public string Type { get; set; } = string.Empty;
+    [YamlDotNet.Serialization.YamlIgnore]
+    public ScenarioExecutionContext ExecutionContext => ScenarioStepFactory.GetExecutionContext(Type);
     public int Seconds { get; set; }
     public string Section { get; set; } = string.Empty;
     public string Command { get; set; } = string.Empty;
+    public string FallbackLink { get; set; } = string.Empty;
     public int SectionOpenTimeoutSeconds { get; set; } = 5;
     public int CommandTimeoutSeconds { get; set; } = 15;
     public string Executable { get; set; } = string.Empty;
@@ -37,10 +43,14 @@ public sealed class ScenarioStepDefinition
     public int ConsoleTimeoutSeconds { get; set; } = 30;
     public int QueryInputTimeoutSeconds { get; set; } = 20;
     public int QueryTimeoutSeconds { get; set; } = 120;
-    public int ScrollTimeoutSeconds { get; set; } = 300;
-    public int ScrollPauseMs { get; set; } = 700;
-    public int ScrollNotches { get; set; } = 2;
+    public int ScrollSpeed { get; set; } = 5;
+    [YamlDotNet.Serialization.YamlIgnore]
+    public int ScrollNotches => ScrollSpeed <= 5 ? 1 + (ScrollSpeed - 1) / 4 : 2 + (int)Math.Round((ScrollSpeed - 5) * 8d / 5);
+    [YamlDotNet.Serialization.YamlIgnore]
+    public int ScrollPauseMs => ScrollSpeed <= 5 ? 1500 - (ScrollSpeed - 1) * 200 : 700 - (ScrollSpeed - 5) * 120;
+    // Safety limits are independent of speed and can be configured separately in YAML.
     public int MaxScrollAttempts { get; set; } = 300;
+    public int ScrollTimeoutSeconds { get; set; } = 660;
     public int ScrollUnchangedAttempts { get; set; } = 4;
     public int ResultStablePolls { get; set; } = 3;
 }

@@ -38,6 +38,8 @@ public sealed class ScenarioCatalog
         }
 
         definition.Steps ??= [];
+        // Validate all types while loading, before the UI/autostart timer uses their context.
+        foreach (var step in definition.Steps) _ = step.ExecutionContext;
         return new ScenarioDescriptor(definition.Name, filePath, definition);
     }
 }

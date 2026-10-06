@@ -1,0 +1,75 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "ShowroomBot.Checks/1.0.0": {
+        "dependencies": {
+          "ShowroomBot": "1.0.0",
+          "runtimepack.Microsoft.Windows.SDK.NET.Ref": "10.0.19041.57"
+        },
+        "runtime": {
+          "ShowroomBot.Checks.dll": {}
+        }
+      },
+      "runtimepack.Microsoft.Windows.SDK.NET.Ref/10.0.19041.57": {
+        "runtime": {
+          "Microsoft.Windows.SDK.NET.dll": {
+            "assemblyVersion": "10.0.19041.38",
+            "fileVersion": "10.0.19041.55"
+          },
+          "WinRT.Runtime.dll": {
+            "assemblyVersion": "2.2.0.0",
+            "fileVersion": "2.2.0.48161"
+          }
+        }
+      },
+      "YamlDotNet/18.1.0": {
+        "runtime": {
+          "lib/net10.0/YamlDotNet.dll": {
+            "assemblyVersion": "18.0.0.0",
+            "fileVersion": "18.1.0.0"
+          }
+        }
+      },
+      "ShowroomBot/1.0.0": {
+        "dependencies": {
+          "YamlDotNet": "18.1.0"
+        },
+        "runtime": {
+          "ShowroomBot.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "ShowroomBot.Checks/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "runtimepack.Microsoft.Windows.SDK.NET.Ref/10.0.19041.57": {
+      "type": "runtimepack",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "YamlDotNet/18.1.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-5K+9KFg2TdTl7VXv88Qzi/0lqK6JFoNP3lRuImPYGRV7K/QYklDyTrj4+A+KAki1JsQi6qKY+hDyY7d6WRqjrw==",
+      "path": "yamldotnet/18.1.0",
+      "hashPath": "yamldotnet.18.1.0.nupkg.sha512"
+    },
+    "ShowroomBot/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

@@ -359,13 +359,13 @@ public sealed class MainForm : Form
         UpdateView();
 
         if (!_isExiting && !IsDisposed && !_isCheckingInfrastructure &&
-            _scenarioComboBox.SelectedItem is ScenarioDescriptor &&
+            _scenarioComboBox.SelectedItem is ScenarioDescriptor selectedScenario &&
             _autoStartTimer.ShouldStart(
                 _settings.AutoStartDemo,
                 _idleDetector.GetIdleTime(),
                 TimeSpan.FromMinutes(_settings.IdleMinutes),
                 _isTestScenarioRunning,
-                IsReadyForRdp()))
+                !selectedScenario.Definition.RequiresRdp || IsReadyForRdp()))
         {
             await StartDemoAsync(automatic: true);
         }

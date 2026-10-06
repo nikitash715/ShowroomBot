@@ -1,0 +1,23 @@
+name: "Сценарий 1 — Запрос Toolkit"
+steps:
+  - type: Open1C
+    executable: 'C:\Program Files\1cv8\common\1cestart.exe'
+    server: '10.40.11.50'
+    database: 'dev_erp_sakharov'
+    user: 'Сахаров Никита Борисович'
+    password: '0304'
+    panelColor: '#C0DCC0'
+    maxWindowsToCheck: 10 # Максимальное число удалённых окон для поиска открытой базы; затем запускается новая.
+
+  - type: ExecuteToolkitQuery
+    queryFile: 'Queries1c/РаспределениеЗапасов.txt'
+    queryInputMode: typing
+    scrollSpeed: 10
+
+  - type: Wait
+    seconds: 1    
+
+  - type: ExecuteToolkitQuery
+    queryFile: 'Queries1c/ПланированиеМатериалов.txt'
+    queryInputMode: typing
+    scrollSpeed: 10

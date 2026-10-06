@@ -66,8 +66,22 @@ public sealed class OneCSectionRecognizer
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var crop = screenshot.Clone(panel, PixelFormat.Format32bppArgb);
+        // Small 1C link fonts lose letters at native RDP resolution. Enlarge before
+        // OCR, then map the recognized bounds back to the original screenshot.
+        var scale = suffix == "panel" ? 1d : Math.Min(2d,
+            (double)OcrEngine.MaxImageDimension / Math.Max(crop.Width, crop.Height));
+        using var ocrImage = new Bitmap((int)Math.Floor(crop.Width * scale),
+            (int)Math.Floor(crop.Height * scale), PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(ocrImage))
+        {
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            graphics.DrawImage(crop, new Rectangle(0, 0, ocrImage.Width, ocrImage.Height));
+        }
+        var scaleX = (double)ocrImage.Width / crop.Width;
+        var scaleY = (double)ocrImage.Height / crop.Height;
         var cropPath = Path.ChangeExtension(screenshotPath, $".{suffix}.png");
-        crop.Save(cropPath, ImageFormat.Png);
+        ocrImage.Save(cropPath, ImageFormat.Png);
 
         var file = await StorageFile.GetFileFromPathAsync(Path.GetFullPath(cropPath)).AsTask(cancellationToken);
         using var stream = await file.OpenReadAsync().AsTask(cancellationToken);
@@ -88,7 +102,7 @@ public sealed class OneCSectionRecognizer
             throw new InvalidOperationException("Для распознавания разделов установите английский или русский компонент OCR Windows.");
         }
 
-        var matches = new List<Rectangle>();
+        var matches = new List<(Rectangle Bounds, int ExtraCharacters)>();
         foreach (Language language in languages)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -98,13 +112,14 @@ public sealed class OneCSectionRecognizer
             cancellationToken.ThrowIfCancellationRequested();
             await File.WriteAllTextAsync(Path.ChangeExtension(screenshotPath, $".{suffix}.{language.LanguageTag}.txt"),
                 result.Text, cancellationToken);
-            matches.AddRange(FindMatches(result, section, panel.Location));
+            matches.AddRange(FindMatches(result, section, panel.Location, suffix == "panel", scaleX, scaleY));
         }
 
         // Different language engines may identify the same label. Distinct labels are ambiguous.
         var distinct = new List<Rectangle>();
-        foreach (var match in matches)
+        foreach (var candidate in matches.Where(match => match.ExtraCharacters == matches.Min(item => item.ExtraCharacters)))
         {
+            var match = candidate.Bounds;
             if (!distinct.Any(existing => Rectangle.Intersect(existing, match) is var overlap && overlap.Height > 0 && overlap.Width > 0))
                 distinct.Add(match);
         }
@@ -113,7 +128,8 @@ public sealed class OneCSectionRecognizer
         return new SectionRecognition(panel, distinct.Count == 1 ? distinct[0] : null);
     }
 
-    private static IEnumerable<Rectangle> FindMatches(OcrResult result, string section, Point offset)
+    private static IEnumerable<(Rectangle Bounds, int ExtraCharacters)> FindMatches(OcrResult result, string section, Point offset, bool wholeLabel,
+        double scaleX, double scaleY)
     {
         var expected = Normalize(section);
         for (var index = 0; index < result.Lines.Count; index++)
@@ -147,13 +163,15 @@ public sealed class OneCSectionRecognizer
                         label += Normalize(words[end].Text);
                         if (!expected.StartsWith(label, StringComparison.Ordinal)) break;
                         if (label != expected) continue;
+                        // A section is a complete navigation label, not a word inside another section.
+                        if (wholeLabel && (start != 0 || end != words.Count - 1)) continue;
                         var matched = words.GetRange(start, end - start + 1);
                         var left = matched.Min(word => word.BoundingRect.Left);
                         var top = matched.Min(word => word.BoundingRect.Top);
                         var right = matched.Max(word => word.BoundingRect.Right);
                         var bottom = matched.Max(word => word.BoundingRect.Bottom);
-                        yield return Rectangle.FromLTRB((int)Math.Floor(left) + offset.X, (int)Math.Floor(top) + offset.Y,
-                            (int)Math.Ceiling(right) + offset.X, (int)Math.Ceiling(bottom) + offset.Y);
+                        yield return (Rectangle.FromLTRB((int)Math.Floor(left / scaleX) + offset.X, (int)Math.Floor(top / scaleY) + offset.Y,
+                            (int)Math.Ceiling(right / scaleX) + offset.X, (int)Math.Ceiling(bottom / scaleY) + offset.Y), words.Sum(word => Normalize(word.Text).Length) - expected.Length);
                         break;
                     }
                 }
