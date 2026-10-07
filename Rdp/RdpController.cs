@@ -81,6 +81,42 @@ public sealed class RdpController(string defaultHost = "")
             bounds.Right - bounds.Left >= 320 && bounds.Bottom - bounds.Top >= 200;
     }
 
+    public static async Task EnsureFullScreenAsync(IntPtr handle, KeyboardInputSender keyboard, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        EnsureSessionForeground(handle);
+        if (IsFullScreen(handle)) return;
+        ScenarioExecution.Log("OpenConfig: переключаем RDP в полный экран через Ctrl+Alt+Break.");
+        using var guard = RdpInputGuard.RequireStrict(handle);
+        keyboard.ToggleRdpFullScreen();
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            await Task.Delay(250, token);
+            EnsureSessionForeground(handle);
+            if (IsFullScreen(handle)) return;
+        }
+        throw new InvalidOperationException("OpenConfig: RDP не перешёл в полноэкранный режим; Alt+Tab не отправлен.");
+    }
+
+    private static bool IsFullScreen(IntPtr handle)
+    {
+        var monitor = NativeMethods.MonitorFromWindow(handle, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        var info = new NativeMethods.MONITORINFO
+        {
+            Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>()
+        };
+        if (monitor == IntPtr.Zero || !NativeMethods.GetMonitorInfo(monitor, ref info) ||
+            !NativeMethods.GetClientRect(handle, out var client))
+            throw new InvalidOperationException("OpenConfig: не удалось проверить полноэкранный режим RDP.");
+        var origin = new NativeMethods.POINT();
+        if (!NativeMethods.ClientToScreen(handle, ref origin))
+            throw new InvalidOperationException("OpenConfig: не удалось определить границы экрана RDP.");
+        // A maximized window has borders/title/taskbar; its client does not fill the monitor.
+        return Math.Abs(origin.X - info.Monitor.Left) <= 2 && Math.Abs(origin.Y - info.Monitor.Top) <= 2 &&
+            client.Right - client.Left >= info.Monitor.Right - info.Monitor.Left - 2 &&
+            client.Bottom - client.Top >= info.Monitor.Bottom - info.Monitor.Top - 2;
+    }
+
     public void OpenOrActivate(string host)
     {
         if (string.IsNullOrWhiteSpace(host))

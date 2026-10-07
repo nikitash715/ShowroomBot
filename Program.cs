@@ -66,7 +66,8 @@ internal static class Program
         using var telegramHttp = new HttpClient();
         telegram = new TelegramBotService(telegramHttp, settings.Telegram,
             mainForm.StartDemoFromTelegramAsync, mainForm.StopDemoFromTelegramAsync,
-            new WindowScreenshotService().CaptureDesktop, mainForm.ConfigureAutoStartFromTelegramAsync);
+            new WindowScreenshotService().CaptureDesktop, mainForm.ConfigureAutoStartFromTelegramAsync,
+            new VpnConnector(settings.Vpn).ConnectAsync, mainForm.GetStatusFromTelegramAsync);
         if (telegram.IsEnabled) scenarioRunner.ScenarioChanged += telegram.QueueNotification;
         Task telegramTask = Task.CompletedTask;
         mainForm.Shown += (_, _) => telegramTask = Task.Run(() => telegram.RunAsync(telegramCancellation.Token));

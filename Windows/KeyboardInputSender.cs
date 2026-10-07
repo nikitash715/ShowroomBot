@@ -20,6 +20,31 @@ public sealed class KeyboardInputSender
             CreateVirtualKeyInput(VirtualKeyLeftWindows, keyUp: true));
     }
 
+    // Alt+Home is the RDP Start-menu shortcut, independent of mstsc's Windows-key routing.
+    public void SendRemoteStart() => SendInputs(CreateVirtualKeyInput(0x12, false),
+        CreateVirtualKeyInput(0x24, false), CreateVirtualKeyInput(0x24, true), CreateVirtualKeyInput(0x12, true));
+
+    public void ToggleRdpFullScreen() => SendInputs(
+        CreateVirtualKeyInput(0x11, false), CreateVirtualKeyInput(0x12, false),
+        CreateVirtualKeyInput(0x03, false), CreateVirtualKeyInput(0x03, true), // Ctrl+Alt+Break
+        CreateVirtualKeyInput(0x12, true), CreateVirtualKeyInput(0x11, true));
+
+    public async Task SelectRemoteWindowAltTabAsync(int index, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        SendInputs(CreateVirtualKeyInput(0x12, false));
+        try
+        {
+            await Task.Delay(100, token);
+            // Selecting successive MRU indices visits all windows instead of toggling two.
+            for (var i = 0; i < index; i++) await SendKeyAsync(0x09, token);
+        }
+        finally { SendInputsCore([CreateVirtualKeyInput(0x12, true)]); }
+    }
+
+    public void SelectCurrentLine() => SendInputs(CreateVirtualKeyInput(0x10, false),
+        CreateVirtualKeyInput(0x23, false), CreateVirtualKeyInput(0x23, true), CreateVirtualKeyInput(0x10, true));
+
     public void SendEnter()
     {
         SendInputs(
@@ -158,6 +183,10 @@ public sealed class KeyboardInputSender
         ushort scanCode = virtualKey switch
         {
             0x21 => 0x49, // PageUp (RDP Alt+PageUp)
+            0x25 => 0x4B, // Left (ReadCode tree/editor navigation)
+            0x26 => 0x48, // Up
+            0x27 => 0x4D, // Right
+            0x28 => 0x50, // Down
             0x24 => 0x47, // Home
             0x23 => 0x4F, // End
             0x2E => 0x53, // Delete
@@ -170,7 +199,7 @@ public sealed class KeyboardInputSender
         if (scanCode != 0)
         {
             var physical = CreateScanCodeInput(scanCode, keyUp);
-            if (virtualKey is 0x21 or 0x24 or 0x23 or 0x2E)
+            if (virtualKey is 0x21 or 0x24 or 0x23 or 0x2E or >= 0x25 and <= 0x28)
                 physical.data.keyboardInput.dwFlags |= NativeMethods.KEYEVENTF_EXTENDEDKEY;
             return physical;
         }
@@ -216,6 +245,8 @@ public sealed class KeyboardInputSender
 
     private static void SendInputsCore(NativeMethods.INPUT[] inputs)
     {
+        // Strict ReadCode scopes also guard emergency key-up packets after an async pause.
+        ShowroomBot.Rdp.RdpInputGuard.CheckRelease();
         if (inputs.Length == 0)
         {
             return;

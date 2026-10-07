@@ -12,6 +12,11 @@ public sealed class ScenarioStepFactory
     private static readonly Dictionary<string, Registration> Registrations = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Wait"] = new(ScenarioExecutionContext.None, (_, d) => new WaitStep(d)),
+        ["OpenConfig"] = new(ScenarioExecutionContext.Rdp, (f, d) =>
+            new OpenConfigStep(d, new OpenConfigUi(f._rdpController, f._keyboardInputSender,
+                f._screenshots, f._sectionRecognizer, d))),
+        ["ReadCode"] = new(ScenarioExecutionContext.Rdp, (f, d) =>
+            f.CreateReadCode(d)),
         ["CheckMail"] = new(ScenarioExecutionContext.Local, (f, _) => f._checkMail
             ?? throw new InvalidOperationException("CheckMail: сервис проверки почты не настроен.")),
         ["ExecuteToolkitQuery"] = new(ScenarioExecutionContext.Rdp, (f, d) =>
@@ -47,11 +52,12 @@ public sealed class ScenarioStepFactory
         _checkMail = checkMail;
     }
 
-    public IScenarioStep Create(ScenarioStepDefinition definition)
-    {
-        return GetRegistration(definition.Type).Create(this, definition);
-    }
+    public IScenarioStep Create(ScenarioStepDefinition definition) =>
+        GetRegistration(definition.Type).Create(this, definition);
 
+    private ReadCodeStep CreateReadCode(ScenarioStepDefinition definition) =>
+        new(definition, new ReadCodeUi(_rdpController, _keyboardInputSender,
+            _mouseInputSender, _screenshots, _sectionRecognizer, definition));
     public static ScenarioExecutionContext GetExecutionContext(string type) => GetRegistration(type).Context;
 
     private static Registration GetRegistration(string type) =>

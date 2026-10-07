@@ -19,7 +19,98 @@ public sealed class SectionPanelNotFoundException : InvalidOperationException
 /// <summary>Image-based detection of the expanded left navigation panel; no section coordinates.</summary>
 public sealed class OneCSectionRecognizer
 {
+    public async Task<IReadOnlyList<RecognizedText>> ReadConfiguratorLinesAsync(string path, CancellationToken token)
+    {
+        using var source = new Bitmap(path);
+        var labels = new List<RecognizedText>(await ReadLinesAsync(path, token));
+        // Classic Configurator uses very small fonts. Tile before enlarging so even
+        // a full-HD remote desktop stays within the Windows OCR image limit.
+        const int scale = 3;
+        var tileSize = checked((int)OcrEngine.MaxImageDimension / scale);
+        const int overlap = 32;
+        for (var top = 0; top < source.Height; top += tileSize - overlap)
+        for (var left = 0; left < source.Width; left += tileSize - overlap)
+        {
+            token.ThrowIfCancellationRequested();
+            var region = new Rectangle(left, top, Math.Min(tileSize, source.Width - left),
+                Math.Min(tileSize, source.Height - top));
+            using var enlarged = new Bitmap(region.Width * scale, region.Height * scale, PixelFormat.Format32bppArgb);
+            using (var graphics = Graphics.FromImage(enlarged))
+            {
+                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                graphics.DrawImage(source, new Rectangle(0, 0, enlarged.Width, enlarged.Height), region, GraphicsUnit.Pixel);
+            }
+            var tilePath = Path.ChangeExtension(path, $".configurator-{left}-{top}.png");
+            enlarged.Save(tilePath, ImageFormat.Png);
+            var recognized = await ReadLinesAsync(tilePath, token);
+            labels.AddRange(recognized.Select(l => new RecognizedText(l.Text, Rectangle.FromLTRB(
+                left + l.Bounds.Left / scale, top + l.Bounds.Top / scale,
+                left + (l.Bounds.Right + scale - 1) / scale, top + (l.Bounds.Bottom + scale - 1) / scale))));
+        }
+        var view = OneCConfiguratorRecognizer.Analyze(source, labels);
+        if (view.Editor == null && OneCConfiguratorRecognizer.FindModuleCaptionRegion(source, view) is { } caption)
+        {
+            // Full-screen OCR can drop the entire bold identifier on the grey MDI
+            // caption. Recognize that narrow strip separately on a white background.
+            var captionScale = Math.Max(1, Math.Min(3, (int)OcrEngine.MaxImageDimension / caption.Width));
+            using var strip = new Bitmap(caption.Width, caption.Height, PixelFormat.Format32bppArgb);
+            using (var graphics = Graphics.FromImage(strip))
+                graphics.DrawImage(source, new Rectangle(Point.Empty, strip.Size), caption, GraphicsUnit.Pixel);
+            for (var y = 0; y < strip.Height; y++)
+            for (var x = 0; x < strip.Width; x++)
+            {
+                var color = strip.GetPixel(x, y);
+                strip.SetPixel(x, y, y < 4 || y >= strip.Height - 3 || x < 22 ||
+                    color.R >= 160 || color.G >= 160 || color.B >= 160 ? Color.White : Color.Black);
+            }
+            var lastInk = 0;
+            for (var x = 22; x < strip.Width; x++)
+            {
+                var ink = false;
+                for (var y = 4; y < strip.Height - 3; y++)
+                    if (strip.GetPixel(x, y).R < 120) { ink = true; break; }
+                if (ink) lastInk = x;
+                if (lastInk > 0 && x - lastInk > 40) break;
+            }
+            var textWidth = Math.Min(strip.Width, lastInk + 12);
+            using var enlarged = new Bitmap(textWidth * captionScale, strip.Height * captionScale + 60, PixelFormat.Format32bppArgb);
+            using (var graphics = Graphics.FromImage(enlarged))
+            {
+                graphics.Clear(Color.White);
+                graphics.DrawImage(strip, new Rectangle(0, 30, textWidth * captionScale, strip.Height * captionScale),
+                    new Rectangle(0, 0, textWidth, strip.Height), GraphicsUnit.Pixel);
+            }
+            var captionPath = Path.ChangeExtension(path, ".module-caption.png");
+            enlarged.Save(captionPath, ImageFormat.Png);
+            var recognized = await ReadLinesAsync(captionPath, token);
+            labels.AddRange(recognized.Select(l => new RecognizedText(l.Text, Rectangle.FromLTRB(
+                caption.Left + l.Bounds.Left / captionScale, caption.Top + (l.Bounds.Top - 30) / captionScale,
+                caption.Left + (l.Bounds.Right + captionScale - 1) / captionScale,
+                caption.Top + (l.Bounds.Bottom - 30 + captionScale - 1) / captionScale))));
+        }
+        return labels.Distinct().ToArray();
+    }
+
     // Shared Windows OCR entry point for recognizers that need relative layout.
+    public async Task<IReadOnlyList<RecognizedText>> ReadTreeLinesAsync(string path, Rectangle tree, CancellationToken token)
+    {
+        using var source = new Bitmap(path);
+        var scale = Math.Max(1, Math.Min(3, (int)OcrEngine.MaxImageDimension / Math.Max(tree.Width, tree.Height)));
+        using var cropped = new Bitmap(tree.Width * scale, tree.Height * scale, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(cropped))
+        {
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            graphics.DrawImage(source, new Rectangle(0, 0, cropped.Width, cropped.Height), tree, GraphicsUnit.Pixel);
+        }
+        var treePath = Path.ChangeExtension(path, ".tree.png");
+        cropped.Save(treePath, ImageFormat.Png);
+        var labels = await ReadLinesAsync(treePath, token);
+        return labels.Select(l => new RecognizedText(l.Text, Rectangle.FromLTRB(
+            tree.Left + l.Bounds.Left / scale, tree.Top + l.Bounds.Top / scale,
+            tree.Left + (l.Bounds.Right + scale - 1) / scale, tree.Top + (l.Bounds.Bottom + scale - 1) / scale))).ToArray();
+    }
+
     public async Task<IReadOnlyList<RecognizedText>> ReadLinesAsync(string path, CancellationToken token)
     {
         var file = await StorageFile.GetFileFromPathAsync(Path.GetFullPath(path)).AsTask(token);

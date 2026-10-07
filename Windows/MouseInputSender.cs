@@ -12,6 +12,7 @@ public sealed class MouseInputSender
         ScenarioExecution.Perform(() =>
         {
             ShowroomBot.Rdp.RdpInputGuard.Check();
+            ShowroomBot.Rdp.RdpInputGuard.CheckPointer();
             SendMouseInputCore(NativeMethods.MOUSEEVENTF_LEFTDOWN, 0);
             SendMouseInputCore(NativeMethods.MOUSEEVENTF_LEFTUP, 0);
         });
@@ -24,7 +25,7 @@ public sealed class MouseInputSender
 
     private static void SendMouseInput(uint flags, uint data = 0)
     {
-        ScenarioExecution.Perform(() => { ShowroomBot.Rdp.RdpInputGuard.Check(); SendMouseInputCore(flags, data); });
+        ScenarioExecution.Perform(() => { ShowroomBot.Rdp.RdpInputGuard.Check(); ShowroomBot.Rdp.RdpInputGuard.CheckPointer(); SendMouseInputCore(flags, data); });
     }
 
     private static void SendMouseInputCore(uint flags, uint data)
@@ -67,7 +68,13 @@ public sealed class MouseInputSender
     }
     private static void SendAbsoluteMove(int screenX, int screenY)
     {
-        ScenarioExecution.Perform(() => { ShowroomBot.Rdp.RdpInputGuard.Check(); SendAbsoluteMoveCore(screenX, screenY); });
+        ScenarioExecution.Perform(() =>
+        {
+            ShowroomBot.Rdp.RdpInputGuard.Check();
+            var point = ShowroomBot.Rdp.RdpInputGuard.ConstrainPointer(new Point(screenX, screenY));
+            ShowroomBot.Rdp.RdpInputGuard.CheckPointer(point);
+            SendAbsoluteMoveCore(point.X, point.Y);
+        });
     }
 
     private static void SendAbsoluteMoveCore(int screenX, int screenY)

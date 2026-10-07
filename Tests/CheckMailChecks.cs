@@ -156,7 +156,7 @@ internal static class CheckMailChecks
         var definition = yaml.Deserialize<ScenarioDefinition>("name: Mail\nsteps:\n  - type: cHeCkMaIl\n  - type: Wait\n    seconds: 1\n");
         check(!definition.RequiresRdp && definition.Steps[0].ExecutionContext == ScenarioExecutionContext.Local &&
             definition.Steps[1].ExecutionContext == ScenarioExecutionContext.None, "CheckMail: minimal YAML determines local/neutral context without RDP");
-        foreach (var type in new[] { "Open1C", "Open1CSection", "Open1CCommand", "ExecuteToolkitQuery" })
+        foreach (var type in new[] { "Open1C", "OpenConfig", "Open1CSection", "Open1CCommand", "ExecuteToolkitQuery" })
             check(new ScenarioStepDefinition { Type = type }.ExecutionContext == ScenarioExecutionContext.Rdp,
                 $"CheckMail: existing {type} remains RDP");
         var minimized = false;

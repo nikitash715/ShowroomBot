@@ -11,9 +11,11 @@ public sealed class IdleAutoStartTimer
     }
 
     public bool ShouldStart(bool enabled, TimeSpan idleTime, TimeSpan threshold,
-        bool isRunning, bool infrastructureReady)
+        bool isRunning, bool infrastructureReady, TimeOnly? startTime = null, TimeOnly? endTime = null)
     {
-        return enabled && !isRunning && infrastructureReady && idleTime >= threshold &&
+        return enabled && (!startTime.HasValue || !endTime.HasValue ||
+            IsWithinWindow(TimeOnly.FromDateTime(_timeProvider.GetLocalNow().DateTime), startTime.Value, endTime.Value)) &&
+            !isRunning && infrastructureReady && idleTime >= threshold &&
             (!_lastCompletion.HasValue ||
              _timeProvider.GetElapsedTime(_lastCompletion.Value) >= threshold);
     }
@@ -22,4 +24,7 @@ public sealed class IdleAutoStartTimer
     {
         _lastCompletion = _timeProvider.GetTimestamp();
     }
+
+    public static bool IsWithinWindow(TimeOnly now, TimeOnly start, TimeOnly end) =>
+        start < end ? now >= start && now < end : start > end && (now >= start || now < end);
 }

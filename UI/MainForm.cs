@@ -1,4 +1,4 @@
-﻿using ShowroomBot.Configuration;
+using ShowroomBot.Configuration;
 using ShowroomBot.Core;
 using ShowroomBot.Core.Scenarios;
 using ShowroomBot.Rdp;
@@ -34,12 +34,15 @@ public sealed class MainForm : Form
     private readonly CheckBox _autoStartCheckBox;
     private readonly CheckBox _telegramNotificationsCheckBox;
     private readonly NumericUpDown _idleMinutesInput;
+    private readonly DateTimePicker _autoStartStartTimeInput;
+    private readonly DateTimePicker _autoStartEndTimeInput;
     private readonly ComboBox _scenarioComboBox;
 
     private VpnStatus _vpnStatus = VpnStatus.Disconnected;
     private bool _isRdpAvailable;
     private bool _isCheckingInfrastructure;
     private DateTime _lastInfrastructureCheckUtc = DateTime.MinValue;
+    private readonly System.Diagnostics.Stopwatch _statusRefresh = new();
     private bool _isExiting;
     private bool _isTestScenarioRunning;
     private CancellationTokenSource? _scenarioCancellation;
@@ -67,11 +70,13 @@ public sealed class MainForm : Form
 
         Text = "ShowroomBot";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(620, 450);
-        Size = new Size(720, 450);
+        ClientSize = new Size(600, 380);
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        MaximizeBox = false;
         Icon = LoadApplicationIcon();
 
         _stateValueLabel = CreateValueLabel();
+        _stateValueLabel.MaximumSize = new Size(400, 0);
         _idleValueLabel = CreateValueLabel();
         _thresholdValueLabel = CreateValueLabel();
         _vpnValueLabel = CreateValueLabel();
@@ -92,6 +97,8 @@ public sealed class MainForm : Form
             Value = Math.Clamp(_settings.IdleMinutes, 1, 1440),
             Width = 80
         };
+        _autoStartStartTimeInput = CreateTimeInput("autoStartStartTimeInput", _settings.AutoStartStartTime);
+        _autoStartEndTimeInput = CreateTimeInput("autoStartEndTimeInput", _settings.AutoStartEndTime);
         _telegramNotificationsCheckBox = new CheckBox
         {
             Name = "telegramNotificationsCheckBox",
@@ -147,6 +154,16 @@ public sealed class MainForm : Form
             _settings.IdleMinutes = (int)_idleMinutesInput.Value;
             SaveSettings();
             UpdateView();
+        };
+        _autoStartStartTimeInput.ValueChanged += (_, _) =>
+        {
+            _settings.AutoStartStartTime = _autoStartStartTimeInput.Value.ToString("HH:mm");
+            SaveSettings();
+        };
+        _autoStartEndTimeInput.ValueChanged += (_, _) =>
+        {
+            _settings.AutoStartEndTime = _autoStartEndTimeInput.Value.ToString("HH:mm");
+            SaveSettings();
         };
         _telegramNotificationsCheckBox.CheckedChanged += (_, _) =>
         {
@@ -219,18 +236,18 @@ public sealed class MainForm : Form
         var telegramTab = new TabPage("Telegram")
         {
             Name = "telegramTab",
-            Padding = new Padding(18),
-            AutoScroll = true
+            Padding = new Padding(18)
         };
         tabs.TabPages.Add(botTab);
         tabs.TabPages.Add(telegramTab);
         var panel = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
             Margin = new Padding(0),
             ColumnCount = 2,
-            RowCount = 9,
-            AutoScroll = true
+            RowCount = 9
         };
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -242,22 +259,65 @@ public sealed class MainForm : Form
         AddRow(panel, 4, "RDP:", _rdpValueLabel);
         AddRow(panel, 5, "Сценарий:", _scenarioComboBox);
 
-        var settingsPanel = new FlowLayoutPanel
+        var settingsPanel = new TableLayoutPanel
         {
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true,
+            ColumnCount = 2,
+            RowCount = 2,
             Margin = new Padding(0, 12, 0, 0)
         };
-        settingsPanel.Controls.Add(_autoStartCheckBox);
-        settingsPanel.Controls.Add(new Label
+        settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 2));
+        settingsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        settingsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        settingsPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var accentStrip = new Panel
+        {
+            Size = new Size(2, 0),
+            Dock = DockStyle.Fill,
+            BackColor = SystemColors.ControlDark,
+            Margin = new Padding(0)
+        };
+        settingsPanel.Controls.Add(accentStrip, 0, 0);
+        settingsPanel.SetRowSpan(accentStrip, 2);
+
+        var idleSettingsRow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(10, 0, 0, 0)
+        };
+        idleSettingsRow.Controls.Add(_autoStartCheckBox);
+        idleSettingsRow.Controls.Add(new Label
         {
             Text = "Минут:",
             AutoSize = true,
             Margin = new Padding(12, 6, 4, 0)
         });
-        settingsPanel.Controls.Add(_idleMinutesInput);
+        idleSettingsRow.Controls.Add(_idleMinutesInput);
+        settingsPanel.Controls.Add(idleSettingsRow, 1, 0);
+
+        var timeSettingsRow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(10, 4, 0, 0)
+        };
+        timeSettingsRow.Controls.Add(new Label
+        {
+            Text = "Время работы автозапуска: с",
+            AutoSize = true,
+            Margin = new Padding(3, 6, 4, 0)
+        });
+        timeSettingsRow.Controls.Add(_autoStartStartTimeInput);
+        timeSettingsRow.Controls.Add(new Label { Text = "до", AutoSize = true, Margin = new Padding(4, 6, 4, 0) });
+        timeSettingsRow.Controls.Add(_autoStartEndTimeInput);
+        settingsPanel.Controls.Add(timeSettingsRow, 1, 1);
 
         panel.Controls.Add(settingsPanel, 0, 6);
         panel.SetColumnSpan(settingsPanel, 2);
@@ -365,7 +425,9 @@ public sealed class MainForm : Form
                 _idleDetector.GetIdleTime(),
                 TimeSpan.FromMinutes(_settings.IdleMinutes),
                 _isTestScenarioRunning,
-                !selectedScenario.Definition.RequiresRdp || IsReadyForRdp()))
+                !selectedScenario.Definition.RequiresRdp || IsReadyForRdp(),
+                TimeOnly.ParseExact(_settings.AutoStartStartTime, "HH:mm"),
+                TimeOnly.ParseExact(_settings.AutoStartEndTime, "HH:mm")))
         {
             await StartDemoAsync(automatic: true);
         }
@@ -432,7 +494,21 @@ public sealed class MainForm : Form
             if (idleMinutes.HasValue) _idleMinutesInput.Value = idleMinutes.Value;
             if (enabled.HasValue) _autoStartCheckBox.Checked = enabled.Value;
             return $"Автозапуск: {(_settings.AutoStartDemo ? "включён" : "выключен")}. " +
-                $"Интервал бездействия: {_settings.IdleMinutes} мин.";
+                $"Интервал бездействия: {_settings.IdleMinutes} мин. " +
+                $"Время: {_settings.AutoStartStartTime}–{_settings.AutoStartEndTime} (местное время компьютера).";
+        }, cancellationToken);
+
+    public Task<string> GetStatusFromTelegramAsync(CancellationToken cancellationToken) =>
+        InvokeAsync(() =>
+        {
+            if (_isExiting || IsDisposed) return "Приложение завершается.";
+            var vpn = _vpnDetector.GetStatus(_settings.Vpn.ConnectionNames);
+            return $"Демонстрация: {(_isTestScenarioRunning ? "выполняется" : "остановлена")}.\n" +
+                $"Сценарий: {(_scenarioComboBox.SelectedItem as ScenarioDescriptor)?.Name ?? "не выбран"}.\n" +
+                $"VPN: {(vpn.IsConnected ? $"подключён ({vpn.ActiveConnectionName})" : "не подключён")}.\n" +
+                $"RDP (последняя проверка): {(_isRdpAvailable ? "доступен" : "недоступен")}.\n" +
+                $"Автозапуск: {(_settings.AutoStartDemo ? "включён" : "выключен")}; бездействие {_settings.IdleMinutes} мин.; " +
+                $"время {_settings.AutoStartStartTime}–{_settings.AutoStartEndTime} (местное время компьютера).";
         }, cancellationToken);
 
     private async Task StartDemoAsync(bool automatic = false)
@@ -453,6 +529,7 @@ public sealed class MainForm : Form
             return;
         }
 
+        _statusRefresh.Reset();
         _isTestScenarioRunning = true;
         _demoController.StartDemo(automatic);
         using var cancellation = new CancellationTokenSource();
@@ -529,7 +606,16 @@ public sealed class MainForm : Form
 
     private void UpdateView()
     {
-        _stateValueLabel.Text = GetDisplayState(_demoController.State);
+        if (_demoController.State != AppState.DemoRunning)
+        {
+            _stateValueLabel.Text = GetDisplayState(_demoController.State);
+            _statusRefresh.Reset();
+        }
+        else if (!_statusRefresh.IsRunning || _statusRefresh.Elapsed >= TimeSpan.FromSeconds(3))
+        {
+            _stateValueLabel.Text = ScenarioExecution.ActiveStatus ?? "Запуск сценария";
+            _statusRefresh.Restart();
+        }
         _stateValueLabel.ForeColor = _demoController.State == AppState.DemoRunning
             ? Color.DarkGreen
             : SystemColors.ControlText;
@@ -592,6 +678,16 @@ public sealed class MainForm : Form
             _ => state.ToString()
         };
     }
+
+    private static DateTimePicker CreateTimeInput(string name, string time) => new()
+    {
+        Name = name,
+        Format = DateTimePickerFormat.Custom,
+        CustomFormat = "HH:mm",
+        ShowUpDown = true,
+        Width = 80,
+        Value = DateTime.Today.Add(TimeOnly.ParseExact(time, "HH:mm").ToTimeSpan())
+    };
 
     private static string FormatIdleTime(TimeSpan idleTime)
     {

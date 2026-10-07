@@ -3,6 +3,8 @@ namespace ShowroomBot.Configuration;
 public sealed class AppSettings
 {
     public bool AutoStartDemo { get; set; }
+    public string AutoStartStartTime { get; set; } = "09:00";
+    public string AutoStartEndTime { get; set; } = "18:00";
     public int IdleMinutes { get; set; } = 10;
     public VpnSettings Vpn { get; set; } = new();
     public RdpSettings Rdp { get; set; } = new();

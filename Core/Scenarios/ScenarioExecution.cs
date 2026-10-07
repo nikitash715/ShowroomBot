@@ -10,6 +10,36 @@ public sealed class ScenarioExecution : IDisposable
     private static ScenarioExecution? _active;
     private readonly CancellationTokenSource _source;
     private static readonly object LogGate = new();
+    private string _stepName = string.Empty;
+    private string _status = "Запуск сценария";
+    public static string? ActiveStatus
+    {
+        get { lock (ActionGate) return _active?._status; }
+    }
+
+    internal void BeginStep(string name)
+    {
+        lock (ActionGate)
+        {
+            _stepName = name;
+            _status = $"{name}: выполняется";
+        }
+    }
+
+    private void UpdateStatus(string message)
+    {
+        lock (ActionGate)
+        {
+            if (_stepName.Length == 0) return;
+            var prefix = _stepName + ":";
+            var detail = message.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? message[prefix.Length..].Trim() : message;
+            detail = string.Join(" ", detail.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            if (detail.Length > 160) detail = detail[..157] + "…";
+            _status = $"{_stepName}: {detail}";
+        }
+    }
+
     public static ScenarioExecution? Current => Local.Value;
     public CancellationToken Token { get; }
     public string DirectoryPath { get; }
@@ -64,7 +94,12 @@ public sealed class ScenarioExecution : IDisposable
         lock (LogGate) File.AppendAllText(path, $"{timestamp} {message}{Environment.NewLine}");
     }
 
-    public static void Log(string message) => Current?.Write(message);
+    public static void Log(string message)
+    {
+        if (Current is not { } execution) return;
+        execution.Write(message);
+        execution.UpdateStatus(message);
+    }
 
     public void Dispose()
     {

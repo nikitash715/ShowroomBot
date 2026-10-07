@@ -37,7 +37,12 @@ public sealed class ScenarioStepDefinition
         set => _pollIntervalMs = value;
     }
     public int WindowSwitchDelayMs { get; set; } = 700;
-    public int MaxWindowsToCheck { get; set; } = 50;
+    private int? _maxWindowsToCheck;
+    public int MaxWindowsToCheck
+    {
+        get => _maxWindowsToCheck ?? (string.Equals(Type, "OpenConfig", StringComparison.OrdinalIgnoreCase) ? 15 : 50);
+        set => _maxWindowsToCheck = value;
+    }
     public string QueryFile { get; set; } = string.Empty;
     public string QueryInputMode { get; set; } = "typing";
     public int ConsoleTimeoutSeconds { get; set; } = 30;
@@ -53,6 +58,11 @@ public sealed class ScenarioStepDefinition
     public int ScrollTimeoutSeconds { get; set; } = 660;
     public int ScrollUnchangedAttempts { get; set; } = 4;
     public int ResultStablePolls { get; set; } = 3;
+    public int MaxModuleAttempts { get; set; } = 8;
+    public int ReadDurationSeconds { get; set; } = 43;
+    // Legacy YAML option; visual reading does not count source lines.
+    public int MinimumCodeLines { get; set; } = 10;
+    public int ReadLinePauseMs { get; set; } = 900;
 }
 
 public sealed record ScenarioDescriptor(

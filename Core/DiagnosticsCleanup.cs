@@ -4,7 +4,7 @@ public static class DiagnosticsCleanup
 {
     public static void Clean(string directoryPath, DateTime? utcNow = null)
     {
-        var cutoff = (utcNow ?? DateTime.UtcNow).AddDays(-2);
+        var cutoff = (utcNow ?? DateTime.UtcNow).AddDays(-1);
         CleanDirectory(new DirectoryInfo(Path.GetFullPath(directoryPath)), cutoff, deleteWhenEmpty: false);
     }
 

@@ -19,6 +19,22 @@ public sealed class TelegramBotService
     private readonly Func<CancellationToken, Task<string>> _stop;
     private readonly Func<string, string> _captureDesktop;
     private readonly Func<bool?, int?, CancellationToken, Task<string>>? _configureAutoStart;
+    private readonly Func<CancellationToken, Task<string>>? _connectVpn;
+    private readonly Func<CancellationToken, Task<string>>? _status;
+    private static readonly object MainMenu = Keyboard(
+        ["Запустить демонстрацию", "Остановить демонстрацию"],
+        ["Скриншот", "Статус"],
+        ["Автозапуск", "Подключить VPN"]);
+    private static readonly object AutoStartMenu = Keyboard(
+        ["Включить автозапуск", "Выключить автозапуск"],
+        ["Бездействие 5 мин", "Бездействие 10 мин", "Бездействие 15 мин"],
+        ["Бездействие 30 мин", "Бездействие 60 мин"],
+        ["Другой интервал", "Главное меню"]);
+
+    private static object Keyboard(params string[][] rows) => new
+    {
+        keyboard = rows, resize_keyboard = true, is_persistent = true, one_time_keyboard = false
+    };
     private readonly Channel<ScenarioNotification> _notifications = Channel.CreateUnbounded<ScenarioNotification>(
         new UnboundedChannelOptions { SingleReader = true, AllowSynchronousContinuations = false });
     public bool IsEnabled => _settings.Enabled && _settings.AllowedUserId > 0 &&
@@ -27,7 +43,9 @@ public sealed class TelegramBotService
     public TelegramBotService(HttpClient http, TelegramSettings settings,
         Func<CancellationToken, Task<string>> start,
         Func<CancellationToken, Task<string>> stop, Func<string, string> captureDesktop,
-        Func<bool?, int?, CancellationToken, Task<string>>? configureAutoStart = null)
+        Func<bool?, int?, CancellationToken, Task<string>>? configureAutoStart = null,
+        Func<CancellationToken, Task<string>>? connectVpn = null,
+        Func<CancellationToken, Task<string>>? status = null)
     {
         _http = http;
         _settings = settings;
@@ -35,6 +53,8 @@ public sealed class TelegramBotService
         _stop = stop;
         _captureDesktop = captureDesktop;
         _configureAutoStart = configureAutoStart;
+        _connectVpn = connectVpn;
+        _status = status;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -98,22 +118,46 @@ public sealed class TelegramBotService
             chat.GetProperty("id").GetInt64() != _settings.AllowedUserId ||
             !message.TryGetProperty("text", out var text)) return;
 
-        var words = text.GetString()?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries) ?? [];
+        var input = text.GetString()?.Trim();
+        input = input switch
+        {
+            "Запустить демонстрацию" => "/demo",
+            "Остановить демонстрацию" => "/stop",
+            "Скриншот" => "/screenshot",
+            "Статус" => "/status",
+            "Подключить VPN" => "/vpn",
+            "Автозапуск" => "/autostart",
+            "Включить автозапуск" => "/autostart on",
+            "Выключить автозапуск" => "/autostart off",
+            "Бездействие 5 мин" => "/idle 5",
+            "Бездействие 10 мин" => "/idle 10",
+            "Бездействие 15 мин" => "/idle 15",
+            "Бездействие 30 мин" => "/idle 30",
+            "Бездействие 60 мин" => "/idle 60",
+            "Другой интервал" => "/idle help",
+            "Главное меню" => "/menu",
+            _ => input
+        };
+        var words = input?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries) ?? [];
         var command = words.FirstOrDefault();
+        var menu = command is "/autostart" or "/idle" ? AutoStartMenu : MainMenu;
         // Commands in private chat do not require a bot username suffix.
         string result;
         try
         {
             result = command switch
             {
-                "/start" => "/demo — запустить выбранную демонстрацию\n/stop — остановить демонстрацию\n/screenshot — снимок локального рабочего стола\n" +
+                "/start" or "/menu" => "/demo — запустить выбранную демонстрацию\n/stop — остановить демонстрацию\n/screenshot — снимок локального рабочего стола\n" +
+                    "/status — состояние ShowroomBot, VPN и RDP\n/vpn — подключить первый VPN из config.yaml\n/menu — кнопочное меню\n" +
                     "/autostart on|off — включить/выключить автозапуск\n/autostart status — состояние и интервал\n/idle N — интервал бездействия (1–1440 минут)\n" +
                     "О начале сценария придёт уведомление с названием. По завершении, ошибке или остановке — результат и снимок экрана.",
                 "/demo" => await _start(cancellationToken),
                 "/stop" => await _stop(cancellationToken),
                 "/screenshot" => string.Empty,
+                "/vpn" when words.Length == 1 => _connectVpn is null ? "Подключение VPN недоступно." : await _connectVpn(cancellationToken),
+                "/status" => _status is null ? "Статус недоступен." : await _status(cancellationToken),
                 "/autostart" or "/idle" => await ConfigureAutoStartAsync(words, cancellationToken),
-                _ => "Доступные команды: /start, /demo, /stop, /screenshot, /autostart, /idle."
+                _ => "Доступные команды: /start, /menu, /demo, /stop, /screenshot, /autostart, /idle, /status, /vpn."
             };
             if (command == "/screenshot")
             {
@@ -124,7 +168,7 @@ public sealed class TelegramBotService
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception) { result = "Не удалось выполнить команду. Проверьте состояние ShowroomBot."; }
 
-        await SendTextAsync(result, cancellationToken);
+        await SendTextAsync(result, cancellationToken, menu);
     }
 
     private Task<string> ConfigureAutoStartAsync(string[] words, CancellationToken token)
@@ -196,7 +240,7 @@ public sealed class TelegramBotService
         return SendTextAsync($"Новое письмо Outlook\nОт: {mail.Sender}\nТема: {mail.Subject}\n\n{mail.Body}", token);
     }
 
-    private async Task SendTextAsync(string text, CancellationToken token)
+    private async Task SendTextAsync(string text, CancellationToken token, object? menu = null)
     {
         // Split long errors without losing their tail or breaking a UTF-16 surrogate pair.
         for (var offset = 0; offset < text.Length;)
@@ -204,10 +248,12 @@ public sealed class TelegramBotService
             var length = Math.Min(4000, text.Length - offset);
             if (char.IsHighSurrogate(text[offset + length - 1])) length--;
             if (length == 0) length = 1;
-            using var response = await CallAsync("sendMessage", JsonContent.Create(new
+            var payload = new Dictionary<string, object>
             {
-                chat_id = _settings.AllowedUserId, text = text.Substring(offset, length)
-            }), token);
+                ["chat_id"] = _settings.AllowedUserId, ["text"] = text.Substring(offset, length)
+            };
+            if (menu is not null) payload["reply_markup"] = menu;
+            using var response = await CallAsync("sendMessage", JsonContent.Create(payload), token);
             offset += length;
         }
     }
@@ -219,7 +265,7 @@ public sealed class TelegramBotService
         {
             cancellationToken.ThrowIfCancellationRequested();
             var path = _captureDesktop(directory);
-            await SendDocumentAsync(path, cancellationToken);
+            await SendDocumentAsync(path, cancellationToken, MainMenu);
         }
         finally
         {
@@ -229,10 +275,11 @@ public sealed class TelegramBotService
         }
     }
 
-    private async Task SendDocumentAsync(string path, CancellationToken cancellationToken)
+    private async Task SendDocumentAsync(string path, CancellationToken cancellationToken, object? menu = null)
     {
         using var content = new MultipartFormDataContent();
         content.Add(new StringContent(_settings.AllowedUserId.ToString(CultureInfo.InvariantCulture)), "chat_id");
+        if (menu is not null) content.Add(new StringContent(JsonSerializer.Serialize(menu)), "reply_markup");
         var file = new StreamContent(File.OpenRead(path));
         file.Headers.ContentType = new("image/png");
         content.Add(file, "document", "desktop.png");

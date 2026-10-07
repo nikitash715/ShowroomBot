@@ -14,6 +14,74 @@ static void Check(bool value, string message)
 }
 
 await RdpChecks.RunAsync(Check);
+await ReadCodeChecks.RunAsync(Check);
+await OpenConfigChecks.RunAsync(Check);
+var imageArgument = Array.IndexOf(args, "--configurator-image");
+if (imageArgument >= 0)
+{
+    var imagePath = Path.GetFullPath(args[imageArgument + 1]);
+    var imageLabels = await new OneCSectionRecognizer().ReadConfiguratorLinesAsync(imagePath, CancellationToken.None);
+    using var captured = new Bitmap(imagePath);
+    var configurator = OneCConfiguratorRecognizer.Analyze(captured, imageLabels);
+    Console.WriteLine($"Configurator: {configurator.IsConfigurator}; tree: {configurator.Tree}; tab: {OneCConfiguratorRecognizer.FindMainConfigurationTab(imageLabels, captured.Size)?.Bounds}");
+    if (configurator.Tree == null)
+        foreach (var label in imageLabels.Where(l => l.Bounds.Left < captured.Width / 6))
+            Console.WriteLine($"OCR: {label.Text} @ {label.Bounds}");
+    if (args.Contains("--expect-scrolled-tree"))
+    {
+        var dockTab = OneCConfiguratorRecognizer.FindMainConfigurationTab(imageLabels, captured.Size);
+        Check(configurator.IsConfigurator && configurator.Tree is { } tree && dockTab != null &&
+            tree.Bottom < dockTab.Bounds.Top && tree.Bottom < captured.Height * .8 &&
+            OneCConfiguratorRecognizer.TreeRows(imageLabels, tree).Count > 0,
+            "ReadCode: прокрученное дерево с панелью служебных сообщений распознано и доступно для Home");
+        Console.WriteLine($"Tree: {configurator.Tree}; metadata tab: {dockTab?.Bounds}");
+    }
+    var expectedModuleArgument = Array.IndexOf(args, "--expect-module");
+    if (expectedModuleArgument >= 0)
+    {
+        Console.WriteLine($"Editor: {configurator.Editor}; module: {configurator.ModuleName}");
+        Check(configurator.Editor != null && OneCConfiguratorRecognizer.MatchesModuleName(
+            configurator.ModuleName, args[expectedModuleArgument + 1]),
+            "ReadCode: на снимке сбоя подтверждены редактор и имя открытого модуля");
+        Check(OneCConfiguratorRecognizer.FindFoldPluses(captured, configurator.Editor!.Value).Any(),
+            "ReadCode: на снимке сбоя значки раскрытия попадают в границы редактора");
+    }
+    if (args.Contains("--expect-missing-source"))
+    {
+        Console.WriteLine($"Tree: {configurator.Tree}; editor: {configurator.Editor}; module: {configurator.ModuleName}");
+        Check(configurator.Editor != null &&
+            OneCConfiguratorRecognizer.MatchesModuleName(configurator.ModuleName, "CRM_MSExchangeСервер") &&
+            OneCConfiguratorRecognizer.HasMissingSource(configurator),
+            "ReadCode: реальное окно отсутствующего исходного текста подтверждено и пропускается");
+    }
+    Check(configurator.IsConfigurator && configurator.Tree != null &&
+        OneCConfiguratorRecognizer.FindMainConfigurationTab(imageLabels, captured.Size) != null,
+        "ReadCode: реальный снимок RDP — конфигуратор, открытое дерево и основная вкладка распознаны");
+    if (args.Contains("--expect-common-modules-plus"))
+    {
+        var node = OneCConfiguratorRecognizer.FindTreeNode(imageLabels, configurator.Tree!.Value, "Общие модули");
+        Check(node != null, "ReadCode: на снимке ошибки найдена строка «Общие модули»");
+        var toggle = OneCConfiguratorRecognizer.FindTreeToggle(captured, configurator.Tree.Value, node!);
+        Check(toggle is { IsExpanded: false } && toggle.Center.X < node!.Bounds.Left,
+            $"ReadCode: на снимке ошибки найден + слева от «Общие модули»: {toggle?.Center}");
+    }
+    if (args.Contains("--common-modules-image"))
+    {
+        imageLabels = await new OneCSectionRecognizer().ReadTreeLinesAsync(imagePath, configurator.Tree!.Value, CancellationToken.None);
+        var modules = OneCConfiguratorRecognizer.FindTreeNode(imageLabels, configurator.Tree!.Value, "Общие модули");
+        Check(modules != null, "ReadCode: реальный снимок — видимый узел общих модулей найден без прокрутки");
+        var candidates = OneCConfiguratorRecognizer.CommonModuleRows(imageLabels, configurator.Tree.Value,
+            modules, modules!.Bounds.Left);
+        Check(candidates.Length > 0, "ReadCode: реальный снимок — распознаны дочерние модули для открытия");
+        Console.WriteLine($"Модули: {string.Join(", ", candidates.Select(c => c.Text))}");
+    }
+}
+if (args.Contains("--readcode-only"))
+{
+    Console.WriteLine("Все проверки ReadCode и RDP пройдены.");
+    return;
+}
+await VpnChecks.RunAsync(Check);
 await CheckMailChecks.RunAsync(Check);
 var linkTitle = new RecognizedText("Переход по ссылке", new Rectangle(10, 10, 200, 20));
 var linkGo = new RecognizedText("Перейти", new Rectangle(90, 100, 60, 20));
@@ -43,7 +111,7 @@ var diagnosticsRoot = Path.Combine(Path.GetTempPath(), $"showroombot-cleanup-{Gu
 try
 {
     var nowUtc = DateTime.UtcNow;
-    var cutoff = nowUtc.AddDays(-2);
+    var cutoff = nowUtc.AddDays(-1);
     DiagnosticsCleanup.Clean(diagnosticsRoot, nowUtc);
     Check(!Directory.Exists(diagnosticsRoot), "diagnostics: missing directory is ignored");
     Directory.CreateDirectory(diagnosticsRoot);
@@ -72,7 +140,7 @@ try
     }
     Check(!File.Exists(oldFile) && !File.Exists(nestedOld) &&
         !Directory.Exists(Path.Combine(diagnosticsRoot, "old-run")), "diagnostics: old files and nested folders removed");
-    Check(File.Exists(boundaryFile) && File.Exists(recentFile), "diagnostics: retain last 48 hours including boundary");
+    Check(File.Exists(boundaryFile) && File.Exists(recentFile), "diagnostics: retain last 24 hours including boundary");
     Check(File.Exists(mixedRecent) && !File.Exists(mixedOld), "diagnostics: recent files in old folders preserved");
     DiagnosticsCleanup.Clean(diagnosticsRoot, nowUtc);
     Check(!File.Exists(lockedFile) && Directory.Exists(diagnosticsRoot), "diagnostics: cleanup can be repeated and retains root");
@@ -84,6 +152,22 @@ finally
 }
 
 var idleClock = new ManualTimeProvider();
+var workStart = new TimeOnly(9, 0);
+var workEnd = new TimeOnly(18, 0);
+Check(!IdleAutoStartTimer.IsWithinWindow(new TimeOnly(8, 59), workStart, workEnd), "autostart: before opening");
+Check(IdleAutoStartTimer.IsWithinWindow(workStart, workStart, workEnd), "autostart: opening included");
+Check(IdleAutoStartTimer.IsWithinWindow(new TimeOnly(17, 59), workStart, workEnd), "autostart: within window");
+Check(!IdleAutoStartTimer.IsWithinWindow(workEnd, workStart, workEnd), "autostart: closing excluded");
+Check(!IdleAutoStartTimer.IsWithinWindow(new TimeOnly(23, 0), workStart, workEnd), "autostart: after closing");
+Check(IdleAutoStartTimer.IsWithinWindow(new TimeOnly(0, 0), new TimeOnly(22, 0), new TimeOnly(6, 0)) &&
+    !IdleAutoStartTimer.IsWithinWindow(new TimeOnly(12, 0), new TimeOnly(22, 0), new TimeOnly(6, 0)), "autostart: overnight window");
+Check(!IdleAutoStartTimer.IsWithinWindow(workStart, workStart, workStart), "autostart: equal boundaries disable window");
+var windowTimer = new IdleAutoStartTimer(idleClock);
+Check(!windowTimer.ShouldStart(true, TimeSpan.FromHours(1), TimeSpan.FromMinutes(1), false, true,
+    workStart, workEnd), "autostart: clock blocks idle start before opening");
+idleClock.Advance(TimeSpan.FromHours(9));
+Check(windowTimer.ShouldStart(true, TimeSpan.FromHours(1), TimeSpan.FromMinutes(1), false, true,
+    workStart, workEnd), "autostart: clock permits idle start at opening");
 var autoStart = new IdleAutoStartTimer(idleClock);
 var threshold = TimeSpan.FromMinutes(2);
 var longIdle = TimeSpan.FromHours(1);
@@ -174,9 +258,13 @@ try
         "изменение настройки сохраняет комментарии и корректный YAML");
     File.WriteAllText(configPath, "# заголовок\nidleMinutes: 17 # inline\nautomation:\n  mouse:\n    movementDurationMilliseconds: 410 # длительность\n    stepDelayMilliseconds: 12\nunknown: 'keep' # сохранить\n");
     var migrated = service.Load();
+    Check(migrated.AutoStartStartTime == "09:00" && migrated.AutoStartEndTime == "18:00", "autostart: old config defaults");
+    migrated.AutoStartStartTime = "22:30";
+    migrated.AutoStartEndTime = "06:15";
     Check(!migrated.Telegram.Enabled && migrated.Telegram.AllowedUserId == 0 &&
         migrated.Telegram.BotToken == "", "Telegram: старый конфиг оставляет интеграцию выключенной");
     service.Save(migrated);
+    Check(service.Load().AutoStartStartTime == "22:30" && service.Load().AutoStartEndTime == "06:15", "autostart: working hours persist");
     var saved = File.ReadAllText(configPath);
     Check(service.Load().Automation.Typing.MinimumDelayMilliseconds == 80 && saved.Contains("# inline") &&
         saved.Contains("unknown: 'keep' # сохранить") && service.Load().Automation.Mouse.MovementDurationMilliseconds == 410,
@@ -372,7 +460,7 @@ var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../
 var yaml = File.ReadAllText(Path.Combine(root, "Examples/ScenarioReference.example.yaml"));
 var definition = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build()
     .Deserialize<ScenarioDefinition>(yaml);
-Check(definition.Steps.Count == 6 && definition.Steps[0].Type == "Open1C" &&
+Check(definition.Steps.Count == 8 && definition.Steps[0].Type == "Open1C" &&
     definition.Steps[5].Type == "CheckMail" && definition.Steps[5].ExecutionContext == ScenarioExecutionContext.Local &&
     definition.Steps[3].Type == "ExecuteToolkitQuery" && definition.Steps[3].ScrollNotches == 2,
     "пример YAML десериализуется с параметрами шага");
@@ -437,13 +525,18 @@ Check(scenarioDeserializer.Deserialize<ScenarioStepDefinition>(
     "явные настройки Open1C переопределяют defaults независимо от порядка полей YAML");
 Check(definition.Steps[0].ReadyTimeoutSeconds == 420 && definition.Steps[0].PollIntervalMs == 30000,
     "пример Open1C ожидает запуск 7 минут с проверкой каждые 30 секунд");
+var minimalConfigStep = scenarioDeserializer.Deserialize<ScenarioStepDefinition>("type: OpenConfig\n");
+Check(minimalConfigStep.WindowSwitchDelayMs == 700 && minimalConfigStep.AfterActivationDelayMs == 1000 &&
+    minimalConfigStep.AfterRunDialogDelayMs == 500 && minimalConfigStep.ReadyTimeoutSeconds == 420 &&
+    minimalConfigStep.PollIntervalMs == 500,
+    "OpenConfig без параметров времени использует значения по умолчанию");
 var overriddenStep = scenarioDeserializer.Deserialize<ScenarioStepDefinition>(
     "type: Open1C\nafterActivationDelayMs: 0\nafterRunDialogDelayMs: 123\npollIntervalMs: 250\n");
 Check(overriddenStep.AfterActivationDelayMs == 0 && overriddenStep.AfterRunDialogDelayMs == 123 &&
     overriddenStep.PollIntervalMs == 250,
     "явные параметры времени переопределяют значения по умолчанию, включая нулевую паузу");
 Check(definition.Steps.Select(step => step.Type).SequenceEqual(
-    new[] { "Open1C", "Open1CSection", "Open1CCommand", "ExecuteToolkitQuery", "Wait", "CheckMail" }), "справочник содержит все типы шагов");
+    new[] { "Open1C", "Open1CSection", "Open1CCommand", "ExecuteToolkitQuery", "Wait", "CheckMail", "OpenConfig", "ReadCode" }), "справочник содержит все типы шагов");
 var stepFactory = new ScenarioStepFactory(null!, null!, null!, null!, null!);
 Check(definition.Steps[4].Seconds == 5 && stepFactory.Create(definition.Steps[4]) is WaitStep,
     "пример Wait десериализуется и создаётся фабрикой");
@@ -571,5 +664,7 @@ sealed class ManualTimeProvider : TimeProvider
     private long _timestamp;
     public override long TimestampFrequency => TimeSpan.TicksPerSecond;
     public override long GetTimestamp() => _timestamp;
+    public override DateTimeOffset GetUtcNow() => new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddTicks(_timestamp);
+    public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Utc;
     public void Advance(TimeSpan elapsed) => _timestamp += elapsed.Ticks;
 }

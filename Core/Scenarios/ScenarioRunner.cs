@@ -35,6 +35,7 @@ public sealed class ScenarioRunner
             {
                 execution.Token.ThrowIfCancellationRequested();
                 stepType = definition.Type;
+                execution.BeginStep(stepType);
                 timer.Restart();
                 execution.Write($"Начало шага: {stepType}");
                 var step = _stepFactory.Create(definition);

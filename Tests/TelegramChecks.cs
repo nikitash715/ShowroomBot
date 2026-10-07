@@ -23,6 +23,9 @@ internal static class TelegramChecks
         var starts = 0;
         var stops = 0;
         var captures = 0;
+        var vpnConnections = 0;
+        var statuses = 0;
+        var keyboards = new List<string[]>();
         var configurations = new List<(bool? Enabled, int? Minutes)>();
         string? screenshotDirectory = null;
         var replies = new List<string>();
@@ -69,15 +72,26 @@ internal static class TelegramChecks
                         Update(18, owner, "/idle 25"), Update(19, owner, "/idle 0"),
                         Update(20, owner, "/idle 1441"), Update(21, owner, "/idle 1.5"),
                         Update(22, owner, "/idle -1"), Update(23, owner, "/idle 5 extra"),
-                        Update(24, owner, "/autostart on extra"), Update(25, owner, "/idle abc")
+                        Update(24, owner, "/autostart on extra"), Update(25, owner, "/idle abc"),
+                        Update(26, owner, "/menu"), Update(27, owner, "Статус"),
+                        Update(28, owner, "Подключить VPN"), Update(29, owner + 1, "/vpn"),
+                        Update(30, owner, "Подключить VPN", "group"), Update(31, owner, "/vpn", chat: owner + 1),
+                        Update(32, owner, "Запустить демонстрацию"), Update(33, owner, "Остановить демонстрацию"),
+                        Update(34, owner, "Скриншот"), Update(35, owner, "Автозапуск"),
+                        Update(36, owner, "Включить автозапуск"), Update(37, owner, "Выключить автозапуск"),
+                        Update(38, owner, "Бездействие 5 мин"), Update(39, owner, "Бездействие 10 мин"),
+                        Update(40, owner, "Бездействие 15 мин"), Update(41, owner, "Бездействие 30 мин"),
+                        Update(42, owner, "Бездействие 60 мин"), Update(43, owner, "Другой интервал"),
+                        Update(44, owner, "Главное меню"), Update(45, owner, "/vpn"), Update(46, owner, "/status"),
+                        Update(47, owner, "/vpn /disconnect"), Update(48, owner + 1, "Подключить VPN")
                     });
-                check(body.RootElement.GetProperty("offset").GetInt64() == 26,
+                check(body.RootElement.GetProperty("offset").GetInt64() == 49,
                     "Telegram: offset advances past all processed updates");
                 if (polls == 2) throw new HttpRequestException("simulated network failure");
                 if (polls == 3)
                 {
                     recovered = true;
-                    return Ok(new[] { Update(7, owner, "/demo") });
+                    return Ok(new[] { Update(7, owner, "/demo"), Update(28, owner, "Подключить VPN") });
                 }
                 pollWaiting.TrySetResult();
                 await Task.Delay(Timeout.Infinite, token);
@@ -88,13 +102,19 @@ internal static class TelegramChecks
                 check(body.RootElement.GetProperty("chat_id").GetInt64() == owner,
                     "Telegram: reply goes only to owner");
                 replies.Add(body.RootElement.GetProperty("text").GetString()!);
+                var markup = body.RootElement.GetProperty("reply_markup");
+                check(markup.GetProperty("resize_keyboard").GetBoolean() && markup.GetProperty("is_persistent").GetBoolean(),
+                    "Telegram: command replies include persistent compact menu");
+                keyboards.Add(markup.GetProperty("keyboard").EnumerateArray()
+                    .SelectMany(row => row.EnumerateArray().Select(button => button.GetString()!)).ToArray());
                 // Losing the launch reply must not launch the demo again.
-                if (replies.Last() == "started") return new HttpResponseMessage(HttpStatusCode.BadGateway);
+                if (replies.Last() is "started" or "VPN launch started") return new HttpResponseMessage(HttpStatusCode.BadGateway);
             }
             else if (method == "sendDocument")
             {
                 var body = await request.Content!.ReadAsStringAsync(token);
                 uploaded = body.Contains("desktop.png") && body.Contains("image/png") && body.Contains(owner.ToString());
+                check(body.Contains("reply_markup"), "Telegram: screenshot command includes menu");
             }
             else throw new Exception("Unexpected method");
             return Ok(true);
@@ -115,21 +135,26 @@ internal static class TelegramChecks
             {
                 configurations.Add((enabled, minutes));
                 return Task.FromResult("settings");
-            });
+            }, _ => { vpnConnections++; return Task.FromResult("VPN launch started"); },
+            _ => { statuses++; return Task.FromResult("status"); });
         var run = service.RunAsync(deadline.Token);
         await pollWaiting.Task.WaitAsync(deadline.Token);
         deadline.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(2));
         check(resets == 1 && recovered, "Telegram: network failure retries without resetting pending updates");
-        check(starts == 2 && stops == 1 && captures == 1,
+        check(starts == 3 && stops == 2 && captures == 2 && vpnConnections == 2 && statuses == 2,
             "Telegram: unauthorized/group/edited/duplicate messages have no side effects");
         check(uploaded && screenshotDirectory != null && !Directory.Exists(screenshotDirectory),
             "Telegram: PNG upload and temporary screenshot cleanup");
         check(replies.Any(r => r.Contains("Не удалось")) && replies.All(r => !r.Contains("private exception")),
             "Telegram: command errors are safe and do not terminate polling");
         check(run.IsCompletedSuccessfully, "Telegram: cancellation interrupts pending HTTP polling");
-        check(configurations.SequenceEqual(new (bool?, int?)[] { (null, null), (true, null), (false, null), (null, null), (null, 25) }),
+        check(configurations.SequenceEqual(new (bool?, int?)[] { (null, null), (true, null), (false, null), (null, null), (null, 25),
+            (null, null), (true, null), (false, null), (null, 5), (null, 10), (null, 15), (null, 30), (null, 60) }),
             "Telegram: authorized settings commands parsed; invalid/group/foreign commands have no effects");
+        check(keyboards.Any(k => new[] { "Запустить демонстрацию", "Остановить демонстрацию", "Скриншот", "Статус", "Автозапуск", "Подключить VPN" }.SequenceEqual(k)) &&
+            keyboards.Any(k => k.Contains("Включить автозапуск") && k.Contains("Выключить автозапуск") && k.Contains("Главное меню")),
+            "Telegram: main and autostart menus expose actions and navigation");
         check(replies.Any(r => r.Contains("/autostart") && r.Contains("/idle") && r.Contains("снимок экрана")),
             "Telegram: help includes settings and lifecycle notifications");
 
@@ -191,6 +216,14 @@ internal static class TelegramChecks
                     try
                     {
                         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                        var startTime = (System.Windows.Forms.DateTimePicker)form.Controls.Find("autoStartStartTimeInput", true).Single();
+                        var endTime = (System.Windows.Forms.DateTimePicker)form.Controls.Find("autoStartEndTimeInput", true).Single();
+                        check(startTime.Value.Hour == 9 && endTime.Value.Hour == 18, "autostart UI: default working hours");
+                        startTime.Value = DateTime.Today.AddHours(22).AddMinutes(30);
+                        endTime.Value = DateTime.Today.AddHours(6).AddMinutes(15);
+                        check(appSettings.AutoStartStartTime == "22:30" && appSettings.AutoStartEndTime == "06:15" &&
+                            settingsService.Load().AutoStartStartTime == "22:30" && settingsService.Load().AutoStartEndTime == "06:15",
+                            "autostart UI: working hours save shared and persisted settings");
                         var telegramGroup = (System.Windows.Forms.GroupBox)form.Controls.Find("telegramSettingsGroup", true).Single();
                         var notifications = (System.Windows.Forms.CheckBox)telegramGroup.Controls.Find("telegramNotificationsCheckBox", true).Single();
                         check(notifications.Checked, "Telegram UI: old configs keep notifications enabled by default");
@@ -207,6 +240,10 @@ internal static class TelegramChecks
                             preview.Save(previewPath, System.Drawing.Imaging.ImageFormat.Png);
                         }
                         var idle = await Task.Run(() => form.StopDemoFromTelegramAsync(timeout.Token));
+                        var appStatus = await Task.Run(() => form.GetStatusFromTelegramAsync(timeout.Token));
+                        check(appStatus.Contains("остановлена") && appStatus.Contains(definition.Name) &&
+                            appStatus.Contains("VPN:") && appStatus.Contains("RDP") && appStatus.Contains("22:30–06:15"),
+                            "Telegram UI: status includes scenario, infrastructure and working hours");
                         check(idle.Contains("не выполнялась"), "Telegram UI: stop while idle");
                         var status = await Task.Run(() => form.ConfigureAutoStartFromTelegramAsync(null, null, timeout.Token));
                         check(status.Contains("выключен") && status.Contains("10 мин"), "Telegram UI: reads current settings");

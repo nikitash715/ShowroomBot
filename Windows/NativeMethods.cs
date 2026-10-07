@@ -4,6 +4,10 @@ namespace ShowroomBot.Windows;
 
 public static partial class NativeMethods
 {
+    [DllImport("user32.dll")]
+    internal static extern IntPtr WindowFromPoint(POINT point);
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetAncestor(IntPtr handle, uint flags);
     internal delegate bool EnumWindowsProc(IntPtr handle, IntPtr parameter);
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

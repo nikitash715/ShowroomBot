@@ -55,6 +55,10 @@ public sealed class SettingsService
     private static void Normalize(AppSettings settings)
     {
         var defaultSettings = new AppSettings();
+        if (!TimeOnly.TryParseExact(settings.AutoStartStartTime, "HH:mm", out _))
+            settings.AutoStartStartTime = defaultSettings.AutoStartStartTime;
+        if (!TimeOnly.TryParseExact(settings.AutoStartEndTime, "HH:mm", out _))
+            settings.AutoStartEndTime = defaultSettings.AutoStartEndTime;
 
         if (settings.IdleMinutes < 1)
         {

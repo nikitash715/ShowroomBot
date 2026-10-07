@@ -33,6 +33,7 @@ public sealed class OpenOneCBaseStep : IScenarioStep
         ValidateDefinition();
 
         var windowHandle = await _rdpController.OpenOrActivateAsync(cancellationToken);
+        await RdpController.EnsureFullScreenAsync(windowHandle, _keyboardInputSender, cancellationToken);
         using var inputGuard = RdpInputGuard.Require(windowHandle);
 
         await DelayAsync(_definition.AfterActivationDelayMs, cancellationToken);
@@ -109,7 +110,7 @@ public sealed class OpenOneCBaseStep : IScenarioStep
             {
                 // Each selection moves the selected window to the MRU front. Incrementing
                 // the index visits the next window instead of alternating between two windows.
-                _keyboardInputSender.SelectRemoteWindow(index);
+                await _keyboardInputSender.SelectRemoteWindowAltTabAsync(index, token);
                 await DelayAsync(_definition.WindowSwitchDelayMs, token);
                 EnsureRdpForeground(handle);
             }
@@ -144,23 +145,26 @@ public sealed class OpenOneCBaseStep : IScenarioStep
         return Color.FromArgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
     }
 
-    private string BuildCommand()
-    {
-        var command = new StringBuilder();
-        command.Append(Quote(_definition.Executable));
-        command.Append(" ENTERPRISE /S ");
-        command.Append(Quote($"{_definition.Server}\\{_definition.Database}"));
+    private string BuildCommand() => BuildCommand(_definition, "ENTERPRISE");
 
-        if (!string.IsNullOrWhiteSpace(_definition.User))
+    public static string BuildCommand(ScenarioStepDefinition definition, string mode)
+    {
+        if (mode is not ("ENTERPRISE" or "CONFIG")) throw new ArgumentOutOfRangeException(nameof(mode));
+        var command = new StringBuilder();
+        command.Append(Quote(definition.Executable));
+        command.Append($" {mode} /S ");
+        command.Append(Quote($"{definition.Server}\\{definition.Database}"));
+
+        if (!string.IsNullOrWhiteSpace(definition.User))
         {
             command.Append(" /N ");
-            command.Append(Quote(_definition.User));
+            command.Append(Quote(definition.User));
         }
 
-        if (!string.IsNullOrEmpty(_definition.Password))
+        if (!string.IsNullOrEmpty(definition.Password))
         {
             command.Append(" /P ");
-            command.Append(Quote(_definition.Password));
+            command.Append(Quote(definition.Password));
         }
 
         return command.ToString();
