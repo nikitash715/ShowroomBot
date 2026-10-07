@@ -20,6 +20,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
     private static readonly string[] ModuleAnchors =
         ["ак", "вс", "зак", "зап", "об", "обе", "пер", "пос", "рас", "ск", "ста", "уп", "фо", "ртк"];
     private bool _openedByAppearance;
+    private Rectangle? _confirmedEditor;
 
     public async Task AttachAsync(CancellationToken token)
     {
@@ -187,13 +188,14 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
             var fromY = parent?.Bounds.Bottom ?? _tree!.Value.Top;
             var toY = OneCConfiguratorRecognizer.TreeRows(view.Labels, _tree!.Value).Where(l => l.Bounds.Top >= fromY &&
                     l.Bounds.Left <= _moduleIndent + 5).Select(l => l.Bounds.Top).DefaultIfEmpty(_tree!.Value.Bottom).Min();
-            var visibleModules = ModuleRows(view, parent);
-            if (changeAnchor && visibleModules.Length > 0)
+            var focusModule = OneCConfiguratorRecognizer.FindCommonModuleFocusRow(
+                view.Labels, _tree!.Value, parent, _moduleIndent);
+            if (changeAnchor && focusModule != null)
             {
                 changeAnchor = false;
                 var anchors = ModuleAnchors.Where(anchor => anchor != _lastAnchor).ToArray();
                 _lastAnchor = anchors[Random.Shared.Next(anchors.Length)];
-                await ClickAsync(visibleModules[0].Bounds, token);
+                await ClickAsync(focusModule.Bounds, token);
                 await keyboard.SendTextWithoutPausesAsync(_lastAnchor, token);
                 ScenarioExecution.Log($"ReadCode: случайный буквенный якорь: {_lastAnchor}.");
                 await Task.Delay(options.PollIntervalMs, token);
@@ -207,6 +209,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                 ScenarioExecution.Log($"ReadCode: открываем общий модуль «{candidate.Text}»; кандидатов: {candidates.Length}.");
                 var beforeOpening = view;
                 _openedByAppearance = false;
+                _confirmedEditor = null;
                 ScenarioExecution.Log($"ReadCode: двойной клик по модулю «{candidate.Text}», строка {candidate.Bounds}, интервал 80 мс.");
                 await ClickAsync(candidate.Bounds, token, doubleClick: true);
                 _module = candidate.Text;
@@ -224,6 +227,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                 },
                     "редактор общего модуля", token);
                 _openedByAppearance = !OneCConfiguratorRecognizer.MatchesModuleName(opened.ModuleName, candidate.Text);
+                _confirmedEditor = opened.Editor;
                 if (_openedByAppearance)
                     ScenarioExecution.Log($"ReadCode: модуль «{candidate.Text}» подтверждён по изменению редактора/процедур; ненадёжный OCR заголовка: {opened.ModuleName ?? "?"}.");
                 ScenarioExecution.Log($"ReadCode: подтверждён модуль из строки дерева «{candidate.Text}».");
@@ -341,6 +345,8 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
         using var guard = RdpInputGuard.RequireStrict(_handle);
         await RequireEditorAsync(token);
         await keyboard.SendControlShortcutAsync(0x3E, token); // Ctrl+F4
+        _confirmedEditor = null;
+        _module = null;
         ScenarioExecution.Log("ReadCode: чтение завершено; вкладка модуля закрыта через Ctrl+F4.");
     }
 
@@ -421,15 +427,45 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
     }
 
     private async Task<ConfiguratorView> RequireEditorAsync(CancellationToken token)
+        => await RequireEditorFramesAsync(CaptureAsync, token);
+
+    private async Task<ConfiguratorView> RequireEditorFramesAsync(
+        Func<CancellationToken, Task<ConfiguratorView>> capture, CancellationToken token)
     {
-        var view = await RequireConfiguratorAsync(token);
-        if (view.Editor == null || !EditorIdentityConfirmed(view))
-            throw new InvalidOperationException("ReadCode: редактор выбранного общего модуля не подтверждён.");
-        return view;
+        ConfiguratorView? last = null;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+            var view = await capture(token);
+            if (!view.IsConfigurator)
+                throw new InvalidOperationException("ReadCode: активный конфигуратор не подтверждён; ввод остановлен.");
+            if (view.Editor != null && SameModule(view.ModuleName)) return view;
+            // A caption mismatch can be OCR noise. Retry before trusting continuity.
+            last = EditorIdentityConfirmed(view) ? view : null;
+            ScenarioExecution.Log($"ReadCode: повторное подтверждение {attempt + 1}/3: модуль=«{_module}», заголовок=«{view.ModuleName ?? "?"}», редактор={view.Editor}, подтверждённая область={_confirmedEditor}, содержимое подтверждено={last != null}; снимок: {_path}");
+            if (attempt < 2) await Task.Delay(options.PollIntervalMs, token);
+        }
+        if (last != null) return last;
+        throw new InvalidOperationException("ReadCode: редактор выбранного общего модуля не подтверждён.");
     }
 
     private bool EditorIdentityConfirmed(ConfiguratorView view) => SameModule(view.ModuleName) ||
-        (_openedByAppearance && view.Editor != null);
+        (_module != null && _confirmedEditor is { } confirmed && view.Editor is { } editor &&
+         SameEditorArea(confirmed, editor) &&
+         (OneCConfiguratorRecognizer.HasRoutineSyntax(view) || view.Labels.Any(l =>
+             editor.Contains(l.Bounds) &&
+             (l.Text.Contains(":=") || l.Text.Contains(';') || l.Text.TrimStart().StartsWith("//")))));
+
+    private static bool SameEditorArea(Rectangle confirmed, Rectangle current)
+    {
+        // Text/caret and folding markers can shorten the detected white surface.
+        // Compare against the opening, never accumulate drift between OCR frames.
+        const int tolerance = 16;
+        return Math.Abs(confirmed.Left - current.Left) <= tolerance &&
+            Math.Abs(confirmed.Top - current.Top) <= tolerance &&
+            Math.Abs(confirmed.Right - current.Right) <= tolerance &&
+            Math.Abs(confirmed.Bottom - current.Bottom) <= tolerance;
+    }
 
     private bool SameModule(string? name) => name != null &&
         _module != null && OneCConfiguratorRecognizer.MatchesModuleName(name, _module);

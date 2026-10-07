@@ -11,12 +11,14 @@ public static class OneCConfiguratorRecognizer
 {
     // Prefer whole rows over the overlapping words/lines returned by multi-scale OCR.
     public static IReadOnlyList<RecognizedText> TreeRows(IReadOnlyList<RecognizedText> labels, Rectangle tree)
+        => MergeRows(labels, tree, tree.Top + 24);
+
+    private static IReadOnlyList<RecognizedText> MergeRows(IReadOnlyList<RecognizedText> labels, Rectangle tree, int top)
     {
         var rows = new List<RecognizedText>();
         foreach (var label in labels.Where(l => l.Bounds.Left >= tree.Left && l.Bounds.Left < tree.Right &&
-                     l.Bounds.Top >= tree.Top && l.Bounds.Bottom <= tree.Bottom &&
-                     // OCR dock bounds can include the search field above the actual tree.
-                     !(l.Bounds.Top < tree.Top + 24 && l.Bounds.Left < tree.Left + 15))
+                     // Exclude the entire search strip, including its right-hand controls.
+                     l.Bounds.Top >= top && l.Bounds.Bottom <= tree.Bottom)
                  .OrderByDescending(l => l.Text.Length))
         {
             var index = rows.FindIndex(r => Math.Abs((r.Bounds.Top + r.Bounds.Bottom) / 2 -
@@ -55,7 +57,9 @@ public static class OneCConfiguratorRecognizer
     public static RecognizedText[] CommonModuleRows(IReadOnlyList<RecognizedText> labels, Rectangle tree,
         RecognizedText? parent, int indent)
     {
-        var rows = TreeRows(labels, tree);
+        // OCR may include the document icon before a child caption. Allow that
+        // variation, but exclude right-hand controls before merging OCR fragments.
+        var rows = TreeRows(labels.Where(l => l.Bounds.Left <= indent + 64).ToArray(), tree);
         var fromY = parent?.Bounds.Bottom ?? tree.Top;
         var toY = rows.Where(r => r.Bounds.Top >= fromY && r.Bounds.Left <= indent + 5)
             .Select(r => r.Bounds.Top).DefaultIfEmpty(tree.Bottom).Min();
@@ -63,6 +67,12 @@ public static class OneCConfiguratorRecognizer
             .Select(r => r with { Text = ModuleRowName(r.Text) })
             .Where(r => Regex.IsMatch(r.Text, @"^[\p{L}_][\p{L}\p{Nd}_]*$")).ToArray();
     }
+
+    public static RecognizedText? FindCommonModuleFocusRow(IReadOnlyList<RecognizedText> labels, Rectangle tree,
+        RecognizedText? parent, int indent) =>
+        CommonModuleRows(labels, tree, parent, indent)
+            .OrderBy(r => Math.Abs(r.Bounds.Top + r.Bounds.Height / 2 - (tree.Top + tree.Height / 2)))
+            .FirstOrDefault();
 
     private static string ModuleRowName(string text)
     {
@@ -423,7 +433,7 @@ public static class OneCConfiguratorRecognizer
 
     public static bool HasMissingSource(ConfiguratorView view) =>
         view.IsConfigurator && view.ModuleName != null && view.Editor is { } editor &&
-        TreeRows(view.Labels.Where(l => editor.Contains(l.Bounds)).ToArray(), editor)
+        MergeRows(view.Labels.Where(l => editor.Contains(l.Bounds)).ToArray(), editor, editor.Top)
             .Any(l => Normalize(l.Text) == Normalize("Исходный текст модуля отсутствует"));
 
     public static bool IsEmpty(Bitmap image, Rectangle editor) =>

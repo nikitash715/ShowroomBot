@@ -63,9 +63,52 @@ internal static class ReadCodeChecks
         var contentConfirmedUi = new ReadCodeUi(null!, null!, null!, null!, null!, new());
         typeof(ReadCodeUi).GetField("_module", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(contentConfirmedUi, "CRM_BazaZnaniyServer");
         typeof(ReadCodeUi).GetField("_openedByAppearance", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(contentConfirmedUi, true);
+        typeof(ReadCodeUi).GetField("_confirmedEditor", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(contentConfirmedUi, changedEditor.Editor);
         check((bool)typeof(ReadCodeUi).GetMethod("EditorIdentityConfirmed", BindingFlags.NonPublic | BindingFlags.Instance)!
                 .Invoke(contentConfirmedUi, [changedEditor])!,
             "ReadCode: content-confirmed module remains readable with bad nonempty OCR title");
+        var requireFrames = typeof(ReadCodeUi).GetMethod("RequireEditorFramesAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var confirmed = changedEditor with { ModuleName = "CRM_BazaZnaniyServer" };
+        async Task<ConfiguratorView> VerifyFrames(params ConfiguratorView[] frames)
+        {
+            var index = 0;
+            Func<CancellationToken, Task<ConfiguratorView>> capture = ct =>
+            {
+                ct.ThrowIfCancellationRequested();
+                return Task.FromResult(frames[Math.Min(index++, frames.Length - 1)]);
+            };
+            return await (Task<ConfiguratorView>)requireFrames.Invoke(contentConfirmedUi, [capture, CancellationToken.None])!;
+        }
+        foreach (var title in new string?[] { null, "BadOcrTitle" })
+        {
+            // A title-confirmed opening must get the same protection as an appearance-confirmed one.
+            typeof(ReadCodeUi).GetField("_openedByAppearance", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(contentConfirmedUi, false);
+            await VerifyFrames(confirmed);
+            check(await VerifyFrames(confirmed with { ModuleName = title }, confirmed) == confirmed,
+                "ReadCode: transient title OCR failure retries and continues reading");
+            var degraded = confirmed with { ModuleName = title };
+            check(await VerifyFrames(degraded) == degraded,
+                "ReadCode: confirmed editor with procedures survives missing or corrupted title");
+        }
+        foreach (var lost in new[] { confirmed with { Editor = null, ModuleName = null },
+                     confirmed with { ModuleName = null, Labels = [] },
+                     confirmed with { ModuleName = null, Editor = new Rectangle(500, 100, 800, 650) } })
+        {
+            var rejected = false;
+            try { await VerifyFrames(lost); }
+            catch (InvalidOperationException) { rejected = true; }
+            check(rejected, "ReadCode: missing, empty or displaced editor fails repeated confirmation");
+        }
+        var shifted = confirmed with { ModuleName = null,
+            Editor = Rectangle.FromLTRB(confirmed.Editor!.Value.Left + 9, confirmed.Editor.Value.Top,
+                confirmed.Editor.Value.Right, confirmed.Editor.Value.Bottom) };
+        check(await VerifyFrames(shifted) == shifted,
+            "ReadCode: nine-pixel OCR surface shift with procedures preserves confirmed editor");
+        typeof(ReadCodeUi).GetField("_confirmedEditor", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(contentConfirmedUi, null);
+        var unconfirmedRejected = false;
+        try { await VerifyFrames(changedEditor); }
+        catch (InvalidOperationException) { unconfirmedRejected = true; }
+        check(unconfirmedRejected, "ReadCode: content fallback requires a previously confirmed opening");
         var longName = new string('A', 50);
         check(OneCConfiguratorRecognizer.MatchesModuleName(new string('B', 6) + longName[6..], longName) &&
             !OneCConfiguratorRecognizer.MatchesModuleName(new string('B', 7) + longName[7..], longName),
@@ -127,6 +170,19 @@ internal static class ReadCodeChecks
             new("СтроковыеФункции", new(83, 420, 170, 14))], focusTree, null, 26);
         check(jumpedModules.Length == 2 && jumpedModules[0].Text == "СтандартныеПодсистемыСервер",
             "ReadCode: после перехода ст поле поиска не завершает список общих модулей");
+        RecognizedText[] scrolledModules = [
+            new("x", new(350, 144, 10, 14)),
+            new("Поиск", new(83, 144, 100, 14)),
+            new("СтандартныеПодсистемыСервер", new(83, 400, 250, 14)),
+            new("х", new(337, 400, 8, 14)),
+            new("СтроковыеФункции", new(83, 420, 170, 14)),
+            new("Status", new(337, 440, 20, 14))];
+        var scrolledRows = OneCConfiguratorRecognizer.CommonModuleRows(scrolledModules, focusTree, null, 26);
+        var anchorFocus = OneCConfiguratorRecognizer.FindCommonModuleFocusRow(scrolledModules, focusTree, null, 26);
+        check(OneCConfiguratorRecognizer.TreeRows(scrolledModules, focusTree).All(r => r.Bounds.Top >= 162) &&
+            scrolledRows.Select(r => r.Text).SequenceEqual(["СтандартныеПодсистемыСервер", "СтроковыеФункции"]) &&
+            anchorFocus != null && scrolledRows.Contains(anchorFocus) && anchorFocus.Bounds.Left == 83,
+            "ReadCode: без родителя поиск и правые значки исключены; фокус перед якорем направлен на модуль");
         var treeBounds = new Rectangle(2, 150, 340, 550);
         RecognizedText[] treeLabels = [
             new("Общие модули", new(50, 190, 110, 14)),
@@ -144,7 +200,7 @@ internal static class ReadCodeChecks
             "ReadCode: длинное имя модуля сохраняется, координата клика ограничена деревом");
         check(OneCConfiguratorRecognizer.FindTreeNode([new("Обшие модупи", new(50, 190, 110, 14))], treeBounds,
                 "Общие модули") != null &&
-            OneCConfiguratorRecognizer.FindTreeNode([new("Обшие", new(30, 170, 55, 14))], treeBounds, "Общие") != null,
+            OneCConfiguratorRecognizer.FindTreeNode([new("Обшие", new(30, 180, 55, 14))], treeBounds, "Общие") != null,
             "ReadCode: небольшие ошибки OCR в категориях допускаются");
         check(OneCConfiguratorRecognizer.FindTreeNode([new("Общие", new(50, 190, 45, 14)),
                 new("модули", new(100, 190, 60, 14))], treeBounds, "Общие модули") != null,

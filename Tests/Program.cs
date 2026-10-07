@@ -23,6 +23,26 @@ if (imageArgument >= 0)
     var imageLabels = await new OneCSectionRecognizer().ReadConfiguratorLinesAsync(imagePath, CancellationToken.None);
     using var captured = new Bitmap(imagePath);
     var configurator = OneCConfiguratorRecognizer.Analyze(captured, imageLabels);
+    Console.WriteLine($"Editor: {configurator.Editor}; module: {configurator.ModuleName}; routines: {OneCConfiguratorRecognizer.VisibleRoutines(configurator).Count}");
+    var continuityArgument = Array.IndexOf(args, "--editor-continuity-from");
+    if (continuityArgument >= 0)
+    {
+        var openingPath = Path.GetFullPath(args[continuityArgument + 1]);
+        var openingLabels = await new OneCSectionRecognizer().ReadConfiguratorLinesAsync(openingPath, CancellationToken.None);
+        using var openingImage = new Bitmap(openingPath);
+        var opening = OneCConfiguratorRecognizer.Analyze(openingImage, openingLabels);
+        const string selectedModule = "НематериальныеДктивыЛокализация";
+        Check(OneCConfiguratorRecognizer.ConfirmsModuleOpening(opening with { Editor = null }, opening, selectedModule),
+            "ReadCode: incident opening screenshot confirms selected module");
+        var ui = new ReadCodeUi(null!, null!, null!, null!, null!, new() { PollIntervalMs = 1 });
+        const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+        typeof(ReadCodeUi).GetField("_module", flags)!.SetValue(ui, selectedModule);
+        typeof(ReadCodeUi).GetField("_confirmedEditor", flags)!.SetValue(ui, opening.Editor);
+        Func<CancellationToken, Task<ConfiguratorView>> capture = _ => Task.FromResult(configurator);
+        var continued = await (Task<ConfiguratorView>)typeof(ReadCodeUi).GetMethod("RequireEditorFramesAsync", flags)!
+            .Invoke(ui, [capture, CancellationToken.None])!;
+        Check(continued == configurator, "ReadCode: incident reading screenshot survives repeated confirmation");
+    }
     Console.WriteLine($"Configurator: {configurator.IsConfigurator}; tree: {configurator.Tree}; tab: {OneCConfiguratorRecognizer.FindMainConfigurationTab(imageLabels, captured.Size)?.Bounds}");
     if (configurator.Tree == null)
         foreach (var label in imageLabels.Where(l => l.Bounds.Left < captured.Width / 6))
