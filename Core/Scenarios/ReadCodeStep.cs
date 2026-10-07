@@ -6,6 +6,7 @@ public interface IReadCodeUi
     Task AttachAsync(CancellationToken token);
     Task OpenCommonModulesAsync(CancellationToken token);
     Task<string?> OpenRandomModuleAsync(ISet<string> visited, CancellationToken token);
+    Task CloseModuleAsync(CancellationToken token);
     Task<bool> CanReadModuleAsync(CancellationToken token);
     Task ReadModuleAsync(TimeSpan duration, CancellationToken token);
     Task<bool> TryNextConfigurationAsync(CancellationToken token) => Task.FromResult(false);
@@ -21,9 +22,10 @@ public sealed class ReadCodeStep(ScenarioStepDefinition definition, IReadCodeUi 
         Validate(definition);
         await ui.AttachAsync(cancellationToken);
         await ui.OpenCommonModulesAsync(cancellationToken);
+        var readCount = 0;
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         do
         {
-            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (var attempt = 0; attempt < definition.MaxModuleAttempts; attempt++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -33,20 +35,24 @@ public sealed class ReadCodeStep(ScenarioStepDefinition definition, IReadCodeUi 
                 if (!await ui.CanReadModuleAsync(cancellationToken))
                 {
                     ScenarioExecution.Log($"ReadCode: модуль {name} пустой или исходный текст отсутствует; пробуем другой.");
+                    await ui.CloseModuleAsync(cancellationToken);
                     continue;
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 ScenarioExecution.Log($"ReadCode: визуальное чтение {name}, {definition.ReadDurationSeconds} с.");
                 await ui.ReadModuleAsync(TimeSpan.FromSeconds(definition.ReadDurationSeconds), cancellationToken);
                 ScenarioExecution.Log($"ReadCode: чтение {name} завершено.");
-                return;
+                await ui.CloseModuleAsync(cancellationToken);
+                if (++readCount == definition.ReadModuleCount) return;
             }
         } while (await ui.TryNextConfigurationAsync(cancellationToken));
-        throw new InvalidOperationException("ReadCode: не найден общий модуль с доступным исходным текстом.");
+        throw new InvalidOperationException("ReadCode: не удалось прочитать заданное число разных модулей: доступные модули или попытки исчерпаны.");
     }
 
     public static void Validate(ScenarioStepDefinition definition)
     {
+        if (definition.ReadModuleCount <= 0)
+            throw new InvalidOperationException("ReadCode: в YAML обязательно укажите положительный ReadModuleCount.");
         if (definition.MaxModuleAttempts <= 0 || definition.ReadDurationSeconds <= 0 || definition.ReadLinePauseMs <= 0 ||
             definition.ReadyTimeoutSeconds <= 0 || definition.PollIntervalMs <= 0 ||
             definition.MaxScrollAttempts <= 0 || definition.ScrollTimeoutSeconds <= 0)

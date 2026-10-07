@@ -1,4 +1,4 @@
-using ShowroomBot.Configuration;
+﻿using ShowroomBot.Configuration;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using ShowroomBot.Core.Scenarios;
@@ -176,6 +176,19 @@ public sealed class KeyboardInputSender
             await Task.Delay(TimeSpan.FromMilliseconds(_tempo.NextDelay()), token);
         }
     }
+    // Tree type-ahead must receive the whole anchor before its search timeout.
+    public Task SendTextWithoutPausesAsync(string text, CancellationToken cancellationToken = default)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken,
+            ScenarioExecution.Current?.Token ?? CancellationToken.None);
+        linked.Token.ThrowIfCancellationRequested();
+        SendInputs(text.SelectMany(character => new[]
+        {
+            CreateUnicodeInput(character, false), CreateUnicodeInput(character, true)
+        }).ToArray());
+        return Task.CompletedTask;
+    }
+
     private static NativeMethods.INPUT CreateVirtualKeyInput(ushort virtualKey, bool keyUp)
     {
         // RDP needs physical scan codes for navigation. A VK-only Home/End

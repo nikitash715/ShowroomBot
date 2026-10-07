@@ -83,7 +83,19 @@ public static class OneCConfiguratorRecognizer
 
     public static bool ConfirmsModuleOpening(ConfiguratorView before, ConfiguratorView after, string candidate) =>
         after.Editor != null && (MatchesModuleName(after.ModuleName, candidate) ||
-            (before.Editor == null && HasRoutineSyntax(after)));
+            (before.Editor == null && HasRoutineSyntax(after)) || RoutinesChanged(before, after));
+
+    private static bool RoutinesChanged(ConfiguratorView before, ConfiguratorView after)
+    {
+        // Compare declarations by name, ignoring OCR whitespace, order, parameters and coordinates.
+        static HashSet<string> Names(ConfiguratorView view) => VisibleRoutines(view)
+            .Select(r => Regex.Match(r.Text.Trim(), @"^\S+\s+(?<name>[\p{L}_][\p{L}\p{Nd}_]*)\s*\(").Groups["name"].Value)
+            .Select(Normalize).ToHashSet(StringComparer.Ordinal);
+        var previous = Names(before);
+        var current = Names(after);
+        // Losing a declaration alone can be a transient OCR failure.
+        return before.Editor != null && current.Except(previous).Any();
+    }
 
     private static int EditDistance(string actual, string expected)
     {
@@ -110,9 +122,10 @@ public static class OneCConfiguratorRecognizer
         }));
         var actual = Comparable(title);
         var expected = Comparable(candidate);
-        // A long bold caption can have three OCR substitutions even after a
-        // separate crop (e.g. СНМ_ВоронкиПроддхСервер). Keep short names strict.
-        return EditDistance(actual, expected) <= (expected.Length >= 21 ? 3 : expected.Length / 8);
+        // Scale the OCR allowance for long names; keep short identifiers strict.
+        var allowance = expected.Length >= 16 ? Math.Max(2, (int)Math.Ceiling(expected.Length * 0.12))
+            : expected.Length / 8;
+        return EditDistance(actual, expected) <= allowance;
     }
 
     public static string Normalize(string value) => string.Concat(value.Where(char.IsLetterOrDigit)).ToUpperInvariant();

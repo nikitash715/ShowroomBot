@@ -1,4 +1,4 @@
-namespace ShowroomBot.Core.Scenarios;
+﻿namespace ShowroomBot.Core.Scenarios;
 
 public sealed class ScenarioDefinition
 {
@@ -58,6 +58,8 @@ public sealed class ScenarioStepDefinition
     public int ScrollTimeoutSeconds { get; set; } = 660;
     public int ScrollUnchangedAttempts { get; set; } = 4;
     public int ResultStablePolls { get; set; } = 3;
+    [YamlDotNet.Serialization.YamlMember(Alias = "ReadModuleCount", ApplyNamingConventions = false)]
+    public int ReadModuleCount { get; set; }
     public int MaxModuleAttempts { get; set; } = 8;
     public int ReadDurationSeconds { get; set; } = 43;
     // Legacy YAML option; visual reading does not count source lines.

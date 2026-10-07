@@ -1,4 +1,4 @@
-using YamlDotNet.Serialization;
+﻿using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
 namespace ShowroomBot.Core.Scenarios;
@@ -39,7 +39,12 @@ public sealed class ScenarioCatalog
 
         definition.Steps ??= [];
         // Validate all types while loading, before the UI/autostart timer uses their context.
-        foreach (var step in definition.Steps) _ = step.ExecutionContext;
+        foreach (var step in definition.Steps)
+        {
+            _ = step.ExecutionContext;
+            if (string.Equals(step.Type, "ReadCode", StringComparison.OrdinalIgnoreCase))
+                ReadCodeStep.Validate(step);
+        }
         return new ScenarioDescriptor(definition.Name, filePath, definition);
     }
 }

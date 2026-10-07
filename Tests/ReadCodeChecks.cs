@@ -1,4 +1,4 @@
-using System.Drawing;
+﻿using System.Drawing;
 using System.Reflection;
 using ShowroomBot.Core.Scenarios;
 using ShowroomBot.Rdp;
@@ -10,6 +10,21 @@ internal static class ReadCodeChecks
 {
     public static async Task RunAsync(Action<bool, string> check)
     {
+        var compareCode = typeof(ReadCodeUi).GetMethod("CodeImageUnchanged", BindingFlags.NonPublic | BindingFlags.Static)!;
+        using (var before = new Bitmap(200, 100))
+        using (var after = new Bitmap(200, 100))
+        {
+            using (var codeGraphics = Graphics.FromImage(before)) codeGraphics.Clear(Color.White);
+            using (var codeGraphics = Graphics.FromImage(after)) codeGraphics.Clear(Color.White);
+            bool Unchanged() => (bool)compareCode.Invoke(null, [before, after])!;
+            check(Unchanged(), "ReadCode: одинаковое изображение кода означает границу прокрутки");
+            for (var y = 20; y < 35; y++) after.SetPixel(50, y, Color.Black);
+            check(Unchanged(), "ReadCode: мигание каретки не скрывает границу прокрутки");
+            using (var codeGraphics = Graphics.FromImage(after)) codeGraphics.FillRectangle(Brushes.Black, 60, 40, 80, 10);
+            check(!Unchanged(), "ReadCode: изменение видимого кода после прокрутки не считается границей");
+            using var resized = new Bitmap(201, 100);
+            check(!(bool)compareCode.Invoke(null, [before, resized])!, "ReadCode: разные размеры области кода не считаются одинаковыми");
+        }
         check(OneCConfiguratorRecognizer.ParseModuleTitle("(Жць• модујъ CRM_MSExchangeCepep: Модујъ") ==
                 "CRM_MSExchangeCepep" &&
             OneCConfiguratorRecognizer.ParseModuleTitle("Общий модуль CRM_MSExchangeСервер: Модуль") ==
@@ -31,6 +46,30 @@ internal static class ReadCodeChecks
             "ReadCode: даже одна появившаяся процедура подтверждает открытие; прежний редактор и пустая поверхность не подтверждают");
         check(OneCConfiguratorRecognizer.CanonicalModuleName("сям_БазаЗнанийСервер") == "CRM_БазаЗнанийСервер",
             "ReadCode: ошибочный кириллический префикс OCR исправляется на CRM");
+        var oldEditor = appeared with { ModuleName = "OldModule" };
+        var changedEditor = appeared with { ModuleName = "XXM_BazaZnaniySeXXXr", Labels = [
+            new("Procedure LoadKnowledgeBase() Export", new(410, 200, 350, 14)),
+            new("Function FindKnowledgeArticle(Key)", new(410, 250, 400, 14))] };
+        check(!OneCConfiguratorRecognizer.MatchesModuleName(changedEditor.ModuleName, "CRM_BazaZnaniyServer") &&
+            OneCConfiguratorRecognizer.ConfirmsModuleOpening(oldEditor, changedEditor, "CRM_BazaZnaniyServer"),
+            "ReadCode: existing editor with different routines confirms opening despite corrupted title");
+        check(!OneCConfiguratorRecognizer.ConfirmsModuleOpening(oldEditor,
+                oldEditor with { ModuleName = changedEditor.ModuleName, Labels = oldEditor.Labels.Reverse().ToArray() }, "CRM_BazaZnaniyServer") &&
+            !OneCConfiguratorRecognizer.ConfirmsModuleOpening(oldEditor,
+                oldEditor with { Labels = [oldEditor.Labels[0]] }, "CRM_BazaZnaniyServer") &&
+            !OneCConfiguratorRecognizer.ConfirmsModuleOpening(oldEditor,
+                changedEditor with { Editor = null }, "CRM_BazaZnaniyServer"),
+            "ReadCode: reordering, missing OCR declarations and absent editor do not confirm opening");
+        var contentConfirmedUi = new ReadCodeUi(null!, null!, null!, null!, null!, new());
+        typeof(ReadCodeUi).GetField("_module", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(contentConfirmedUi, "CRM_BazaZnaniyServer");
+        typeof(ReadCodeUi).GetField("_openedByAppearance", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(contentConfirmedUi, true);
+        check((bool)typeof(ReadCodeUi).GetMethod("EditorIdentityConfirmed", BindingFlags.NonPublic | BindingFlags.Instance)!
+                .Invoke(contentConfirmedUi, [changedEditor])!,
+            "ReadCode: content-confirmed module remains readable with bad nonempty OCR title");
+        var longName = new string('A', 50);
+        check(OneCConfiguratorRecognizer.MatchesModuleName(new string('B', 6) + longName[6..], longName) &&
+            !OneCConfiguratorRecognizer.MatchesModuleName(new string('B', 7) + longName[7..], longName),
+            "ReadCode: long title tolerance scales to 12 percent");
         var missingSource = new ConfiguratorView(true, new(2, 150, 340, 550),
             new(375, 124, 1300, 650), "CRM_MSExchangeСервер",
             [new("Исходный текст модуля отсутствует", new(940, 466, 190, 14))]);
@@ -147,7 +186,7 @@ internal static class ReadCodeChecks
         var config = OpenOneCBaseStep.BuildCommand(launch, "CONFIG");
         check(config == enterprise.Replace(" ENTERPRISE ", " CONFIG ") && config.Contains("server\\database"),
             "ReadCode: CONFIG использует ровно ту же базу и учётные данные Open1C");
-        var options = new ScenarioStepDefinition { Type = "ReadCode", MinimumCodeLines = 1 };
+        var options = new ScenarioStepDefinition { ReadModuleCount = 1, Type = "ReadCode", MinimumCodeLines = 1 };
         RecognizedText[] moduleLabels = [new("Общие модули", new(50, 190, 110, 14)),
             new("ОбщегоНазначения", new(70, 212, 170, 14)),
             new("Общие формы", new(50, 235, 110, 14)),
@@ -209,17 +248,37 @@ internal static class ReadCodeChecks
         check(preferred.ConfigurationSwitches == 0 && preferred.Opened.SequenceEqual(["Main"]),
             "ReadCode: при подходящем коде основной конфигурации расширения не выбираются");
         var exhausted = new FakeUi([("Empty", ""), ("Other", code)]);
-        await ExpectFailure(new ReadCodeStep(new() { MaxModuleAttempts = 1 }, exhausted), check);
+        await ExpectFailure(new ReadCodeStep(new() { ReadModuleCount = 1, MaxModuleAttempts = 1 }, exhausted), check);
         check(exhausted.Opened.Count == 1 && exhausted.Read.Count == 0, "ReadCode: лимит попыток соблюдается без ложного успеха");
         check(OneCConfiguratorRecognizer.VisibleRoutines(appeared).Count == 2 &&
             OneCConfiguratorRecognizer.VisibleRoutines(appeared with { Editor = null }).Count == 0,
             "ReadCode: visual reading settings and navigation verified");
+        var multiple = new FakeUi([("Empty", ""), ("One", code), ("Two", code), ("Three", code)]);
+        await new ReadCodeStep(new() { ReadModuleCount = 3 }, multiple).ExecuteAsync();
+        check(multiple.Read.Count == 3 && multiple.Closed.SequenceEqual(multiple.Opened), "ReadCode: module count and closing verified");
+        await ExpectFailure(new ReadCodeStep(new() { ReadModuleCount = 2 }, new FakeUi([("One", code)])), check);
+        await ExpectFailure(new ReadCodeStep(new() { ReadModuleCount = 0 }, new FakeUi([])), check);
+        check(scenario2.Steps[1].ReadModuleCount == 3 && example.ReadModuleCount == 3,
+            "ReadCode: YAML explicitly sets ReadModuleCount to 3");
+        var duplicate = new FakeUi([("One", code), ("One", code)]);
+        await ExpectFailure(new ReadCodeStep(new() { ReadModuleCount = 2 }, duplicate), check);
+        check(duplicate.Read.Count == 1, "ReadCode: repeated module is never read twice");
+        var missingYamlCount = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build()
+            .Deserialize<ScenarioDefinition>("steps:\n  - type: ReadCode\n");
+        check(missingYamlCount.Steps[0].ReadModuleCount == 0, "ReadCode: absent YAML count has no implicit default");
+        var missingCount = new FakeUi([]);
+        await ExpectFailure(new ReadCodeStep(new(), missingCount), check);
+        check(!missingCount.Attached, "ReadCode: missing count rejected before RDP input");
+        var anchorField = typeof(ReadCodeUi).GetField("ModuleAnchors", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var anchors = (string[])anchorField.GetValue(null)!;
+        check(anchors.Length == 14 && anchors.Distinct().Count() == 14 && anchors.All(a => a.Length is >= 1 and <= 3),
+            "ReadCode: 14 distinct short module anchors");
         var custom = new FakeUi([("Good", code)]);
-        await new ReadCodeStep(new() { ReadDurationSeconds = 7, MinimumCodeLines = 0, QueryInputTimeoutSeconds = 0 }, custom).ExecuteAsync();
+        await new ReadCodeStep(new() { ReadModuleCount = 1, ReadDurationSeconds = 7, MinimumCodeLines = 0, QueryInputTimeoutSeconds = 0 }, custom).ExecuteAsync();
         check(custom.Read.Single() == TimeSpan.FromSeconds(7), "ReadCode: visual reading settings and navigation verified");
-        await ExpectFailure(new ReadCodeStep(new() { ReadDurationSeconds = 0 }, new FakeUi([])), check);
+        await ExpectFailure(new ReadCodeStep(new() { ReadModuleCount = 1, ReadDurationSeconds = 0 }, new FakeUi([])), check);
         var invalid = new FakeUi([]);
-        await ExpectFailure(new ReadCodeStep(new() { ReadLinePauseMs = 0 }, invalid), check);
+        await ExpectFailure(new ReadCodeStep(new() { ReadModuleCount = 1, ReadLinePauseMs = 0 }, invalid), check);
         check(!invalid.Attached, "ReadCode: неверные параметры отклонены до ввода");
         using (var cancel = new CancellationTokenSource())
         {
@@ -392,6 +451,8 @@ internal static class ReadCodeChecks
         public bool Attached { get; private set; }
         public List<string> Opened { get; } = [];
         public List<TimeSpan> Read { get; } = [];
+        public List<string> Closed { get; } = [];
+        public Task CloseModuleAsync(CancellationToken token) { Closed.Add(Opened.Last()); return Task.CompletedTask; }
         public Action? OnInspect { get; init; }
         public Exception? InspectFailure { get; init; }
         public (string Name, string Text)[]? NextConfiguration { get; set; }
