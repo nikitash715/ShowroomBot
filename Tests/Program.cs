@@ -7,6 +7,56 @@ using ShowroomBot.Configuration;
 using ShowroomBot.Rdp;
 using ShowroomBot.Core;
 
+if (args.Length > 0 && args[0] == "--rdp-window-check")
+{
+    await RdpWindowChecks.RunAsync(args[1]);
+    return;
+}
+
+if (args.Length > 0 && args[0] == "--toolkit-regression")
+{
+    await ToolkitRecognitionChecks.RunAsync(args.Skip(1).ToArray());
+    return;
+}
+
+// Explicit opt-in integration run: the actual YAML and production UI/input stack.
+// No Telegram subscription: diagnostics stay local during stabilization runs.
+var realScenario = Array.IndexOf(args, "--run-real-scenario");
+var toolkitScenario = Array.IndexOf(args, "--run-toolkit-scenario");
+if (toolkitScenario >= 0)
+{
+    var toolkitRoot = Path.GetFullPath(args[toolkitScenario + 1]);
+    var settings = new SettingsService(Path.Combine(toolkitRoot, "config.yaml")).Load();
+    var toolkitDefinition = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance)
+        .Build().Deserialize<ScenarioDefinition>(File.ReadAllText(Path.Combine(toolkitRoot, "Scenarios", "Scenario1.yaml")));
+    // Exercise the real RDP steps and both queries, keeping mail delivery out of this local test.
+    toolkitDefinition.Steps.RemoveAll(s => s.Type == "CheckMail");
+    foreach (var step in toolkitDefinition.Steps.Where(s => s.Type == "ExecuteToolkitQuery"))
+        step.QueryFile = Path.GetFullPath(step.QueryFile, toolkitRoot);
+    var runner = new ScenarioRunner(new ScenarioStepFactory(new RdpController(settings.Rdp.Host),
+        new KeyboardInputSender(settings.Automation.Typing), new MouseInputSender(settings.Automation.Mouse),
+        new WindowScreenshotService(), new OneCSectionRecognizer()));
+    await RealScenarioWindow.RunAsync(runner, toolkitDefinition);
+    Console.WriteLine("REAL TOOLKIT SCENARIO COMPLETED");
+    return;
+}
+if (realScenario >= 0)
+{
+    var scenarioRoot = Path.GetFullPath(args[realScenario + 1]);
+    var settings = new SettingsService(Path.Combine(scenarioRoot, "config.yaml")).Load();
+    var realDefinition = new DeserializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance)
+        .Build().Deserialize<ScenarioDefinition>(File.ReadAllText(Path.Combine(scenarioRoot, "Scenarios", "Scenario2.yaml")));
+    var read = realDefinition.Steps.Single(s => s.Type == "ReadCode");
+    ReadCodeStep.Validate(read);
+    Console.WriteLine($"REAL SCENARIO 2: ReadModuleCount={read.ReadModuleCount}; ReadDurationSeconds={read.ReadDurationSeconds}");
+    var runner = new ScenarioRunner(new ScenarioStepFactory(new RdpController(settings.Rdp.Host),
+        new KeyboardInputSender(settings.Automation.Typing), new MouseInputSender(settings.Automation.Mouse),
+        new WindowScreenshotService(), new OneCSectionRecognizer()));
+    await RealScenarioWindow.RunAsync(runner, realDefinition);
+    Console.WriteLine("REAL SCENARIO 2 COMPLETED");
+    return;
+}
+
 static void Check(bool value, string message)
 {
     if (!value) throw new Exception(message);
@@ -31,13 +81,19 @@ if (imageArgument >= 0)
         var openingLabels = await new OneCSectionRecognizer().ReadConfiguratorLinesAsync(openingPath, CancellationToken.None);
         using var openingImage = new Bitmap(openingPath);
         var opening = OneCConfiguratorRecognizer.Analyze(openingImage, openingLabels);
-        const string selectedModule = "НематериальныеДктивыЛокализация";
+        var selectedModule = opening.ModuleName ?? "НематериальныеДктивыЛокализация";
         Check(OneCConfiguratorRecognizer.ConfirmsModuleOpening(opening with { Editor = null }, opening, selectedModule),
             "ReadCode: incident opening screenshot confirms selected module");
         var ui = new ReadCodeUi(null!, null!, null!, null!, null!, new() { PollIntervalMs = 1 });
         const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
         typeof(ReadCodeUi).GetField("_module", flags)!.SetValue(ui, selectedModule);
         typeof(ReadCodeUi).GetField("_confirmedEditor", flags)!.SetValue(ui, opening.Editor);
+        // Match the single-pass OCR used after a real opening is confirmed.
+        imageLabels = await new OneCSectionRecognizer().ReadLinesAsync(imagePath, CancellationToken.None);
+        configurator = OneCConfiguratorRecognizer.Analyze(captured, imageLabels);
+        configurator = (ConfiguratorView)typeof(ReadCodeUi).GetMethod("RestoreConfirmedEditor", flags)!
+            .Invoke(ui, [captured, configurator])!;
+        Console.WriteLine($"Continuity: opening={opening.Editor}; restored={configurator.Editor}");
         Func<CancellationToken, Task<ConfiguratorView>> capture = _ => Task.FromResult(configurator);
         var continued = await (Task<ConfiguratorView>)typeof(ReadCodeUi).GetMethod("RequireEditorFramesAsync", flags)!
             .Invoke(ui, [capture, CancellationToken.None])!;
@@ -236,7 +292,9 @@ bool NeedsMaximize(object window, object work) => (bool)sizingCheck.Invoke(null,
 var workArea = Rect(-2000, -100, 0, 900);
 Check(NeedsMaximize(Rect(-2000, -100, -201, 900), workArea), "RDP: narrow window needs maximize");
 Check(NeedsMaximize(Rect(-2000, -100, 0, 799), workArea), "RDP: short window needs maximize");
-Check(!NeedsMaximize(Rect(-2000, -100, -200, 800), workArea), "RDP: exactly 90% on both axes stays unchanged");
+Check(NeedsMaximize(Rect(-2000, -100, -200, 800), workArea), "RDP: 90% window must maximize");
+Check(NeedsMaximize(Rect(-2000, -100, -100, 850), workArea), "RDP: 95% window must maximize");
+Check(NeedsMaximize(Rect(-2000, -100, -1, 900), workArea), "RDP: even one missing pixel requires maximize");
 Check(!NeedsMaximize(Rect(-2000, -100, 0, 900), workArea), "RDP: large window stays unchanged");
 Check(NeedsMaximize(Rect(211, 1001, 1954, 2017), Rect(0, 0, 1920, 1040)), "RDP: large window mostly outside monitor needs maximize");
 Check(NeedsMaximize(Rect(-2201, -100, -201, 900), workArea), "RDP: window clipped on left needs maximize");
@@ -401,6 +459,9 @@ foreach (var (scale, offset) in new[] { (1, 0), (2, 40) })
         "консоль без подтверждения Toolkit не принимается");
     Check(ToolkitConsoleRecognizer.Analyze(image, labels.Where((_, index) => index != 1).ToArray()).Editor == null,
         "вкладка неактивной консоли не принимается за активную форму");
+    var truncatedTab = ToolkitConsoleRecognizer.Analyze(image, labels.Where((_, index) => index != 0).ToArray());
+    Check(truncatedTab.Editor == layout.Editor && truncatedTab.Execute == layout.Execute,
+        "обрезанная вкладка консоли: полный заголовок формы и панель подтверждают редактор");
     graphics.DrawRectangle(Pens.Red, R(300, 150, 650, 220));
     var errorLabels = labels.Select(l => l with { Text = l.Text.Replace("Toolkit", "Tolkit") }).Append(
         new RecognizedText("(1, 1) Ожидается ВЫБРАТЬ", R(330, 390, 220, 16))).ToArray();

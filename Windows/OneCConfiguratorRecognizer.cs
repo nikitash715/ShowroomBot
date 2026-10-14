@@ -316,8 +316,7 @@ public static class OneCConfiguratorRecognizer
                 while (left > 0 && White(image.GetPixel(left - 1, y))) left--;
                 while (right + 1 < image.Width && White(image.GetPixel(right + 1, y))) right++;
                 if (right - left < image.Width / 4 || left <= (tree?.Right ?? 50)) continue;
-                var bottom = y;
-                while (bottom + 1 < image.Height && White(image.GetPixel(right - 3, bottom + 1))) bottom++;
+                var bottom = FindSurfaceBottom(image, left, right, y);
                 if (bottom - y < 100) continue;
                 // The caret on the first blank line can split the white run.
                 // Recover the left edge from neighbouring rows so the folding
@@ -358,7 +357,7 @@ public static class OneCConfiguratorRecognizer
             : null;
     }
 
-    private static Rectangle? FindModuleSurface(Bitmap image, ConfiguratorView view)
+    internal static Rectangle? FindModuleSurface(Bitmap image, ConfiguratorView view)
     {
         if (!view.IsConfigurator || view.Tree is not { } tree) return null;
         var seedX = tree.Right + (image.Width - tree.Right) / 2;
@@ -370,8 +369,7 @@ public static class OneCConfiguratorRecognizer
             while (left > 0 && White(image.GetPixel(left - 1, y))) left--;
             while (right + 1 < image.Width && White(image.GetPixel(right + 1, y))) right++;
             if (left <= tree.Right || right - left < image.Width / 4) continue;
-            var bottom = y;
-            while (bottom + 1 < image.Height && White(image.GetPixel(right - 3, bottom + 1))) bottom++;
+            var bottom = FindSurfaceBottom(image, left, right, y);
             if (bottom - y < 100) continue;
             // A caret can split the first white scanline; include the folding gutter.
             for (var row = y + 1; row < Math.Min(y + 30, bottom); row++)
@@ -384,6 +382,23 @@ public static class OneCConfiguratorRecognizer
             return Rectangle.FromLTRB(left, y, right, bottom);
         }
         return null;
+    }
+
+    private static int FindSurfaceBottom(Bitmap image, int left, int right, int top)
+    {
+        // Long code lines can reach the right margin; sample across the surface.
+        var nonWhiteRows = 0;
+        for (var y = top + 1; y < image.Height; y++)
+        {
+            var white = 0;
+            for (var sample = 1; sample <= 64; sample++)
+                if (White(image.GetPixel(left + (right - left) * sample / 65, y))) white++;
+            // Dense declarations are still mostly white. Only a predominantly
+            // nonwhite band is a window boundary, not three rows of dark glyphs.
+            nonWhiteRows = white >= 16 ? 0 : nonWhiteRows + 1;
+            if (nonWhiteRows == 3) return y - 3;
+        }
+        return image.Height - 1;
     }
 
     private static bool IsConfigurationHeading(string text)

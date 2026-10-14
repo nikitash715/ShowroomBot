@@ -5,6 +5,17 @@ namespace ShowroomBot.Windows;
 
 public sealed class WindowScreenshotService
 {
+    public static Rectangle GetClientScreenBounds(IntPtr windowHandle)
+    {
+        if (!NativeMethods.GetClientRect(windowHandle, out var client))
+            throw new Win32Exception("Не удалось определить клиентскую область RDP.");
+        var origin = new NativeMethods.POINT { X = client.Left, Y = client.Top };
+        if (!NativeMethods.ClientToScreen(windowHandle, ref origin))
+            throw new Win32Exception("Не удалось определить положение клиентской области RDP.");
+        if (client.Right <= client.Left || client.Bottom <= client.Top)
+            throw new InvalidOperationException("Клиентская область RDP пуста.");
+        return new Rectangle(origin.X, origin.Y, client.Right - client.Left, client.Bottom - client.Top);
+    }
     public string CaptureDesktop(string outputDirectory)
     {
         var bounds = SystemInformation.VirtualScreen;
@@ -29,6 +40,7 @@ public sealed class WindowScreenshotService
 
     public string CaptureClientArea(IntPtr windowHandle, string outputDirectory)
     {
+        var initialBounds = GetClientScreenBounds(windowHandle);
         if (!NativeMethods.GetClientRect(windowHandle, out var clientRect))
         {
             throw new Win32Exception("Не удалось определить клиентскую область окна RDP.");
@@ -65,6 +77,13 @@ public sealed class WindowScreenshotService
         }
 
         bitmap.Save(filePath, ImageFormat.Png);
+        var finalBounds = GetClientScreenBounds(windowHandle);
+        File.WriteAllText(Path.ChangeExtension(filePath, ".window.json"),
+            System.Text.Json.JsonSerializer.Serialize(new { Window = windowHandle.ToInt64(),
+                Before = initialBounds, After = finalBounds, Width = width, Height = height }));
+        if (initialBounds != finalBounds || initialBounds.Size != bitmap.Size ||
+            initialBounds.Location != new Point(screenOrigin.X, screenOrigin.Y))
+            throw new InvalidOperationException("RDP изменил размер или положение во время снимка; координаты не используются.");
         return filePath;
     }
 }

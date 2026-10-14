@@ -116,6 +116,37 @@ public sealed class OneCSectionRecognizer
         var file = await StorageFile.GetFileFromPathAsync(Path.GetFullPath(path)).AsTask(token);
         using var stream = await file.OpenReadAsync().AsTask(token);
         var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(token);
+        if (decoder.PixelWidth > OcrEngine.MaxImageDimension || decoder.PixelHeight > OcrEngine.MaxImageDimension)
+        {
+            // Preserve physical pixel coordinates on large/current monitors: do not shrink
+            // the entire desktop and lose the small button captions again.
+            using var source = new Bitmap(path);
+            var combined = new List<RecognizedText>();
+            var tileSize = (int)OcrEngine.MaxImageDimension;
+            const int overlap = 64;
+            for (var top = 0; top < source.Height; top += tileSize - overlap)
+            for (var left = 0; left < source.Width; left += tileSize - overlap)
+            {
+                token.ThrowIfCancellationRequested();
+                var region = new Rectangle(left, top, Math.Min(tileSize, source.Width - left),
+                    Math.Min(tileSize, source.Height - top));
+                using var tile = source.Clone(region, PixelFormat.Format32bppArgb);
+                var tilePath = Path.ChangeExtension(path, $".ocr-tile-{left}-{top}.png");
+                tile.Save(tilePath, ImageFormat.Png);
+                var tileLabels = await ReadLinesAsync(tilePath, token);
+                combined.AddRange(tileLabels.Select(l => l with { Bounds = new Rectangle(
+                    l.Bounds.X + left, l.Bounds.Y + top, l.Bounds.Width, l.Bounds.Height) }));
+            }
+            var merged = combined.Distinct().ToArray();
+            await File.WriteAllTextAsync(Path.ChangeExtension(path, ".toolkit-ocr.txt"),
+                string.Join(Environment.NewLine, merged.Select(l => l.Text)), token);
+            await File.WriteAllTextAsync(Path.ChangeExtension(path, ".toolkit-ocr.json"),
+                System.Text.Json.JsonSerializer.Serialize(new { Engine = "Windows.Media.Ocr.OcrEngine",
+                    Mode = "overlapping tiles at original resolution", Width = source.Width, Height = source.Height,
+                    Coordinates = "original screenshot pixels", Labels = merged },
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true }), token);
+            return merged;
+        }
         using var bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied).AsTask(token);
         if (bitmap.PixelWidth > OcrEngine.MaxImageDimension || bitmap.PixelHeight > OcrEngine.MaxImageDimension)
             throw new InvalidOperationException("Размер снимка превышает предел Windows OCR.");
@@ -126,9 +157,15 @@ public sealed class OneCSectionRecognizer
         var lines = result.Lines.Where(l => l.Words.Count > 0).Select(l => new RecognizedText(l.Text,
             Rectangle.FromLTRB((int)l.Words.Min(w => w.BoundingRect.Left), (int)l.Words.Min(w => w.BoundingRect.Top),
                 (int)Math.Ceiling(l.Words.Max(w => w.BoundingRect.Right)), (int)Math.Ceiling(l.Words.Max(w => w.BoundingRect.Bottom)))));
-        return lines.Concat(result.Lines.SelectMany(l => l.Words).Select(w => new RecognizedText(w.Text,
+        var labels = lines.Concat(result.Lines.SelectMany(l => l.Words).Select(w => new RecognizedText(w.Text,
             Rectangle.FromLTRB((int)w.BoundingRect.Left, (int)w.BoundingRect.Top,
                 (int)Math.Ceiling(w.BoundingRect.Right), (int)Math.Ceiling(w.BoundingRect.Bottom))))).ToArray();
+        await File.WriteAllTextAsync(Path.ChangeExtension(path, ".toolkit-ocr.json"),
+            System.Text.Json.JsonSerializer.Serialize(new { Engine = "Windows.Media.Ocr.OcrEngine",
+                Language = language.LanguageTag, Width = bitmap.PixelWidth, Height = bitmap.PixelHeight,
+                Coordinates = "pixels in OCR input image", Labels = labels },
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true }), token);
+        return labels;
     }
     public async Task<SectionRecognition> RecognizeAsync(
         string screenshotPath, string section, CancellationToken cancellationToken)

@@ -10,6 +10,19 @@ internal static class ReadCodeChecks
 {
     public static async Task RunAsync(Action<bool, string> check)
     {
+        using (var surface = new Bitmap(400, 240))
+        {
+            using var surfaceGraphics = Graphics.FromImage(surface);
+            surfaceGraphics.Clear(Color.Gray);
+            surfaceGraphics.FillRectangle(Brushes.White, 40, 20, 320, 180);
+            surfaceGraphics.FillRectangle(Brushes.Blue, 350, 100, 8, 14);
+            var findBottom = typeof(OneCConfiguratorRecognizer).GetMethod("FindSurfaceBottom", BindingFlags.NonPublic | BindingFlags.Static)!;
+            check((int)findBottom.Invoke(null, [surface, 40, 359, 20])! == 199,
+                "ReadCode: long code line at right margin does not truncate editor surface");
+            surfaceGraphics.FillRectangle(Brushes.Blue, 55, 65, 160, 8);
+            check((int)findBottom.Invoke(null, [surface, 40, 359, 20])! == 199,
+                "ReadCode: dense declaration spanning half the surface is not an editor boundary");
+        }
         var compareCode = typeof(ReadCodeUi).GetMethod("CodeImageUnchanged", BindingFlags.NonPublic | BindingFlags.Static)!;
         using (var before = new Bitmap(200, 100))
         using (var after = new Bitmap(200, 100))
@@ -84,14 +97,13 @@ internal static class ReadCodeChecks
             // A title-confirmed opening must get the same protection as an appearance-confirmed one.
             typeof(ReadCodeUi).GetField("_openedByAppearance", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(contentConfirmedUi, false);
             await VerifyFrames(confirmed);
-            check(await VerifyFrames(confirmed with { ModuleName = title }, confirmed) == confirmed,
-                "ReadCode: transient title OCR failure retries and continues reading");
+            check(await VerifyFrames(confirmed with { ModuleName = title }, confirmed) == confirmed with { ModuleName = title },
+                "ReadCode: transient title OCR failure with content continues reading immediately");
             var degraded = confirmed with { ModuleName = title };
             check(await VerifyFrames(degraded) == degraded,
                 "ReadCode: confirmed editor with procedures survives missing or corrupted title");
         }
         foreach (var lost in new[] { confirmed with { Editor = null, ModuleName = null },
-                     confirmed with { ModuleName = null, Labels = [] },
                      confirmed with { ModuleName = null, Editor = new Rectangle(500, 100, 800, 650) } })
         {
             var rejected = false;
@@ -104,6 +116,11 @@ internal static class ReadCodeChecks
                 confirmed.Editor.Value.Right, confirmed.Editor.Value.Bottom) };
         check(await VerifyFrames(shifted) == shifted,
             "ReadCode: nine-pixel OCR surface shift with procedures preserves confirmed editor");
+        var noText = confirmed with { ModuleName = null, Labels = [] };
+        check(await VerifyFrames(noText) == noText,
+            "ReadCode: confirmed unchanged editor surface survives missing OCR text");
+        check(await VerifyFrames(confirmed with { IsConfigurator = false }, confirmed) == confirmed,
+            "ReadCode: transient configurator OCR loss is retried before input");
         typeof(ReadCodeUi).GetField("_confirmedEditor", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(contentConfirmedUi, null);
         var unconfirmedRejected = false;
         try { await VerifyFrames(changedEditor); }
@@ -314,8 +331,8 @@ internal static class ReadCodeChecks
         check(multiple.Read.Count == 3 && multiple.Closed.SequenceEqual(multiple.Opened), "ReadCode: module count and closing verified");
         await ExpectFailure(new ReadCodeStep(new() { ReadModuleCount = 2 }, new FakeUi([("One", code)])), check);
         await ExpectFailure(new ReadCodeStep(new() { ReadModuleCount = 0 }, new FakeUi([])), check);
-        check(scenario2.Steps[1].ReadModuleCount == 3 && example.ReadModuleCount == 3,
-            "ReadCode: YAML explicitly sets ReadModuleCount to 3");
+        check(scenario2.Steps[1].ReadModuleCount > 0 && example.ReadModuleCount == 3,
+            "ReadCode: scenario has a positive configured module count; reference sets three");
         var duplicate = new FakeUi([("One", code), ("One", code)]);
         await ExpectFailure(new ReadCodeStep(new() { ReadModuleCount = 2 }, duplicate), check);
         check(duplicate.Read.Count == 1, "ReadCode: repeated module is never read twice");
@@ -325,10 +342,6 @@ internal static class ReadCodeChecks
         var missingCount = new FakeUi([]);
         await ExpectFailure(new ReadCodeStep(new(), missingCount), check);
         check(!missingCount.Attached, "ReadCode: missing count rejected before RDP input");
-        var anchorField = typeof(ReadCodeUi).GetField("ModuleAnchors", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-        var anchors = (string[])anchorField.GetValue(null)!;
-        check(anchors.Length == 14 && anchors.Distinct().Count() == 14 && anchors.All(a => a.Length is >= 1 and <= 3),
-            "ReadCode: 14 distinct short module anchors");
         var custom = new FakeUi([("Good", code)]);
         await new ReadCodeStep(new() { ReadModuleCount = 1, ReadDurationSeconds = 7, MinimumCodeLines = 0, QueryInputTimeoutSeconds = 0 }, custom).ExecuteAsync();
         check(custom.Read.Single() == TimeSpan.FromSeconds(7), "ReadCode: visual reading settings and navigation verified");

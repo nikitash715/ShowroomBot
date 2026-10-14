@@ -6,6 +6,7 @@ namespace ShowroomBot.Rdp;
 
 public sealed class RdpController(string defaultHost = "")
 {
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, Rectangle> StableClientBounds = new();
     public static void MinimizeForLocalStep()
     {
         ScenarioExecution.Perform(() =>
@@ -85,17 +86,46 @@ public sealed class RdpController(string defaultHost = "")
     {
         token.ThrowIfCancellationRequested();
         EnsureSessionForeground(handle);
-        if (IsFullScreen(handle)) return;
-        ScenarioExecution.Log("OpenConfig: переключаем RDP в полный экран через Ctrl+Alt+Break.");
+        if (IsFullScreen(handle))
+        {
+            await WaitForStableClientAsync(handle, token);
+            if (IsFullScreen(handle)) return;
+        }
+        ScenarioExecution.Log("RDP: переключаем сеанс в полный экран через Ctrl+Alt+Break.");
         using var guard = RdpInputGuard.RequireStrict(handle);
         keyboard.ToggleRdpFullScreen();
         for (var attempt = 0; attempt < 20; attempt++)
         {
             await Task.Delay(250, token);
             EnsureSessionForeground(handle);
-            if (IsFullScreen(handle)) return;
+            if (IsFullScreen(handle))
+            {
+                await WaitForStableClientAsync(handle, token);
+                if (IsFullScreen(handle)) return;
+            }
         }
-        throw new InvalidOperationException("OpenConfig: RDP не перешёл в полноэкранный режим; Alt+Tab не отправлен.");
+        throw new InvalidOperationException("RDP не перешёл в стабильный полноэкранный режим; работа с интерфейсом отменена.");
+    }
+
+    private static async Task WaitForStableClientAsync(IntPtr handle, CancellationToken token)
+    {
+        var previous = WindowScreenshotService.GetClientScreenBounds(handle);
+        var stable = Stopwatch.StartNew();
+        var deadline = Stopwatch.StartNew();
+        while (deadline.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            await Task.Delay(100, token);
+            EnsureSessionForeground(handle);
+            var current = WindowScreenshotService.GetClientScreenBounds(handle);
+            if (current != previous) { previous = current; stable.Restart(); }
+            if (stable.ElapsedMilliseconds >= 750)
+            {
+                StableClientBounds[handle] = current;
+                ScenarioExecution.Log($"RDP: клиентская область стабильна перед OCR: {current}");
+                return;
+            }
+        }
+        throw new TimeoutException("Размер клиентской области RDP не стабилизировался перед OCR.");
     }
 
     private static bool IsFullScreen(IntPtr handle)
@@ -113,8 +143,8 @@ public sealed class RdpController(string defaultHost = "")
             throw new InvalidOperationException("OpenConfig: не удалось определить границы экрана RDP.");
         // A maximized window has borders/title/taskbar; its client does not fill the monitor.
         return Math.Abs(origin.X - info.Monitor.Left) <= 2 && Math.Abs(origin.Y - info.Monitor.Top) <= 2 &&
-            client.Right - client.Left >= info.Monitor.Right - info.Monitor.Left - 2 &&
-            client.Bottom - client.Top >= info.Monitor.Bottom - info.Monitor.Top - 2;
+            Math.Abs((client.Right - client.Left) - (info.Monitor.Right - info.Monitor.Left)) <= 2 &&
+            Math.Abs((client.Bottom - client.Top) - (info.Monitor.Bottom - info.Monitor.Top)) <= 2;
     }
 
     public void OpenOrActivate(string host)
@@ -203,6 +233,23 @@ public sealed class RdpController(string defaultHost = "")
         {
             if (NativeMethods.IsIconic(handle)) NativeMethods.ShowWindow(handle, NativeMethods.SW_RESTORE);
             requested = NativeMethods.SetForegroundWindow(handle);
+            if (NativeMethods.GetForegroundWindow() != handle)
+            {
+                // Windows can deny activation from a background scenario thread.
+                // Share the foreground input queue only for this activation attempt.
+                var current = NativeMethods.GetCurrentThreadId();
+                var foreground = NativeMethods.GetWindowThreadProcessId(NativeMethods.GetForegroundWindow(), out _);
+                var attached = foreground != 0 && foreground != current &&
+                    NativeMethods.AttachThreadInput(current, foreground, true);
+                try
+                {
+                    if (attached) requested = NativeMethods.SetForegroundWindow(handle);
+                }
+                finally
+                {
+                    if (attached) NativeMethods.AttachThreadInput(current, foreground, false);
+                }
+            }
         });
         if (NativeMethods.GetForegroundWindow() == handle) EnsureWindowSize(handle);
         var ready = IsSessionWindowReady(handle);
@@ -232,17 +279,35 @@ public sealed class RdpController(string defaultHost = "")
             throw new InvalidOperationException("Не удалось определить размер окна RDP и рабочую область монитора.");
 
         ScenarioExecution.Log($"RDP: окно [{bounds.Left},{bounds.Top},{bounds.Right},{bounds.Bottom}], рабочая область [{info.WorkArea.Left},{info.WorkArea.Top},{info.WorkArea.Right},{info.WorkArea.Bottom}], maximized={NativeMethods.IsZoomed(handle)}");
-        if (!NeedsMaximize(bounds, info.WorkArea) || NativeMethods.IsZoomed(handle)) return;
-
-        ScenarioExecution.Log("RDP: видимая часть окна меньше 90% рабочей области, разворачиваем Windows Maximize");
-        ScenarioExecution.Perform(() => NativeMethods.ShowWindow(handle, NativeMethods.SW_MAXIMIZE));
-        // Synchronous activation callers also need the resized interface to settle.
-        for (var i = 0; i < 20; i++)
+        var fillsScreen = IsFullScreen(handle) ||
+            (NativeMethods.IsZoomed(handle) && !NeedsMaximize(bounds, info.WorkArea));
+        var observed = WindowScreenshotService.GetClientScreenBounds(handle);
+        if (fillsScreen && StableClientBounds.TryGetValue(handle, out var confirmed) && confirmed == observed) return;
+        if (!fillsScreen)
+        {
+            ScenarioExecution.Log("RDP: разворачиваем на всю рабочую область текущего монитора");
+            ScenarioExecution.Perform(() => NativeMethods.ShowWindow(handle, NativeMethods.SW_MAXIMIZE));
+        }
+        var previous = WindowScreenshotService.GetClientScreenBounds(handle);
+        var stable = Stopwatch.StartNew();
+        var deadline = Stopwatch.StartNew();
+        // Do not return to synchronous OCR callers until actual bounds are confirmed.
+        while (deadline.Elapsed < TimeSpan.FromSeconds(10))
         {
             ScenarioExecution.CheckCancellation();
-            Thread.Sleep(50);
+            Thread.Sleep(100);
+            var current = WindowScreenshotService.GetClientScreenBounds(handle);
+            var maximized = IsFullScreen(handle) || (NativeMethods.IsZoomed(handle) &&
+                NativeMethods.GetWindowRect(handle, out var actual) && !NeedsMaximize(actual, info.WorkArea));
+            if (current != previous || !maximized) { previous = current; stable.Restart(); }
+            if (maximized && stable.ElapsedMilliseconds >= 750)
+            {
+                StableClientBounds[handle] = current;
+                ScenarioExecution.Log($"RDP: разворачивание подтверждено; клиентская область {current}");
+                return;
+            }
         }
-        ScenarioExecution.CheckCancellation();
+        throw new TimeoutException("RDP не развернулся на всю рабочую область; OCR и ввод отменены.");
     }
 
     private static bool NeedsMaximize(NativeMethods.RECT window, NativeMethods.RECT workArea)
@@ -250,7 +315,7 @@ public sealed class RdpController(string defaultHost = "")
         var width = (long)workArea.Right - workArea.Left;
         var height = (long)workArea.Bottom - workArea.Top;
         return width > 0 && height > 0 &&
-            (((long)Math.Min(window.Right, workArea.Right) - Math.Max(window.Left, workArea.Left)) < width * 0.9 ||
-             ((long)Math.Min(window.Bottom, workArea.Bottom) - Math.Max(window.Top, workArea.Top)) < height * 0.9);
+            (window.Left > workArea.Left || window.Top > workArea.Top ||
+             window.Right < workArea.Right || window.Bottom < workArea.Bottom);
     }
 }

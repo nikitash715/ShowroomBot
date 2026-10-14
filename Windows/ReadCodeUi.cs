@@ -16,9 +16,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
     private Size _size;
     private readonly Queue<string> _extensionTabs = new();
     private bool _tabsInitialized;
-    private string? _lastAnchor;
-    private static readonly string[] ModuleAnchors =
-        ["ак", "вс", "зак", "зап", "об", "обе", "пер", "пос", "рас", "ск", "ста", "уп", "фо", "ртк"];
+    private bool _selectedModule;
     private bool _openedByAppearance;
     private Rectangle? _confirmedEditor;
 
@@ -155,7 +153,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
             view = await RequireConfiguratorAsync(token);
             if (view.Tree == null) continue;
             ScenarioExecution.Log($"ReadCode: в основной/предыдущей конфигурации мало кода; пробуем открытое расширение «{name}».");
-            _lastAnchor = null;
+            _selectedModule = false;
             await OpenCommonModulesAsync(token);
             return true;
         }
@@ -179,7 +177,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
         using var guard = RdpInputGuard.RequireStrict(_handle);
         var view = await RequireConfiguratorAsync(token);
         var down = Random.Shared.Next(100) < 70;
-        var changeAnchor = _lastAnchor == null || Random.Shared.Next(100) < 50;
+        var changePosition = !_selectedModule || Random.Shared.Next(100) < 50;
         string? previous = null;
         for (var attempt = 0; attempt < Math.Min(12, options.MaxScrollAttempts); attempt++)
         {
@@ -188,17 +186,13 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
             var fromY = parent?.Bounds.Bottom ?? _tree!.Value.Top;
             var toY = OneCConfiguratorRecognizer.TreeRows(view.Labels, _tree!.Value).Where(l => l.Bounds.Top >= fromY &&
                     l.Bounds.Left <= _moduleIndent + 5).Select(l => l.Bounds.Top).DefaultIfEmpty(_tree!.Value.Bottom).Min();
-            var focusModule = OneCConfiguratorRecognizer.FindCommonModuleFocusRow(
-                view.Labels, _tree!.Value, parent, _moduleIndent);
-            if (changeAnchor && focusModule != null)
+            if (changePosition)
             {
-                changeAnchor = false;
-                var anchors = ModuleAnchors.Where(anchor => anchor != _lastAnchor).ToArray();
-                _lastAnchor = anchors[Random.Shared.Next(anchors.Length)];
-                await ClickAsync(focusModule.Bounds, token);
-                await keyboard.SendTextWithoutPausesAsync(_lastAnchor, token);
-                ScenarioExecution.Log($"ReadCode: случайный буквенный якорь: {_lastAnchor}.");
-                await Task.Delay(options.PollIntervalMs, token);
+                changePosition = false;
+                // A click cannot prove remote keyboard focus. Never type search anchors.
+                // Wheel navigation cannot insert text even if the editor retains focus.
+                ScenarioExecution.Log("ReadCode: случайная прокрутка дерева без текстового ввода.");
+                await ScrollTreeAsync((down ? -1 : 1) * Random.Shared.Next(4, 13), token);
                 continue;
             }
             var candidates = ModuleRows(view, parent).Where(l => !visited.Contains(l.Text) &&
@@ -213,6 +207,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                 ScenarioExecution.Log($"ReadCode: двойной клик по модулю «{candidate.Text}», строка {candidate.Bounds}, интервал 80 мс.");
                 await ClickAsync(candidate.Bounds, token, doubleClick: true);
                 _module = candidate.Text;
+                _selectedModule = true;
                 string? lastConfirmation = null;
                 var opened = await WaitAsync(v =>
                 {
@@ -311,8 +306,6 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                         editor.Top + editor.Height * Random.Shared.Next(15, 80) / 100), ct);
                     await Task.Delay(options.ReadLinePauseMs, ct);
                 }
-                view = await RequireEditorAsync(ct);
-                editor = view.Editor!.Value;
                 using var beforeScroll = CaptureCodeImage(editor);
                 ct.ThrowIfCancellationRequested();
                 if (seekingDown == null && ++readingPasses >= 2)
@@ -323,8 +316,11 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                 var notches = seekingDown != null ? Math.Max(3, editor.Height / 60) : Random.Shared.Next(3, 7);
                 mouse.Scroll(down ? -notches : notches);
                 await Task.Delay(options.PollIntervalMs, ct);
-                view = await RequireEditorAsync(ct);
-                using var afterScroll = CaptureCodeImage(view.Editor!.Value);
+                // Pixels suffice for scroll progress. The next iteration reads OCR
+                // once for the new visible routines and validates the editor.
+                RdpController.EnsureSessionForeground(_handle);
+                _path = screenshots.CaptureClientArea(_handle, _directory);
+                using var afterScroll = CaptureCodeImage(editor);
                 if (CodeImageUnchanged(beforeScroll, afterScroll))
                 {
                     forcedDown = !down;
@@ -403,13 +399,16 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
         token.ThrowIfCancellationRequested();
         RdpController.EnsureSessionForeground(_handle);
         _path = screenshots.CaptureClientArea(_handle, _directory);
-        var labels = await ocr.ReadConfiguratorLinesAsync(_path, token);
+        var labels = _confirmedEditor == null
+            ? await ocr.ReadConfiguratorLinesAsync(_path, token)
+            : await ocr.ReadLinesAsync(_path, token);
         RdpController.EnsureSessionForeground(_handle);
         using var image = new Bitmap(_path);
         if (_size != Size.Empty && image.Size != _size) throw new InvalidOperationException("ReadCode: размер RDP изменился.");
         _size = image.Size;
         var view = OneCConfiguratorRecognizer.Analyze(image, labels);
-        if (view.Tree is { } tree)
+        view = RestoreConfirmedEditor(image, view);
+        if (_confirmedEditor == null && view.Tree is { } tree)
         {
             var treeLabels = await ocr.ReadTreeLinesAsync(_path, tree, token);
             // Do not merge OCR from different image scales inside the tree:
@@ -417,6 +416,14 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
             view = view with { Labels = labels.Where(l => !tree.IntersectsWith(l.Bounds)).Concat(treeLabels).ToArray() };
         }
         return view;
+    }
+
+    private ConfiguratorView RestoreConfirmedEditor(Bitmap image, ConfiguratorView view)
+    {
+        if (!view.IsConfigurator || _confirmedEditor == null) return view;
+        var surface = OneCConfiguratorRecognizer.FindModuleSurface(image, view);
+        var restored = view with { Editor = surface };
+        return EditorIdentityConfirmed(restored) ? restored : view;
     }
 
     private async Task<ConfiguratorView> RequireConfiguratorAsync(CancellationToken token)
@@ -437,11 +444,9 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
         {
             token.ThrowIfCancellationRequested();
             var view = await capture(token);
-            if (!view.IsConfigurator)
-                throw new InvalidOperationException("ReadCode: активный конфигуратор не подтверждён; ввод остановлен.");
-            if (view.Editor != null && SameModule(view.ModuleName)) return view;
+            if (view.IsConfigurator && view.Editor != null && EditorIdentityConfirmed(view)) return view;
             // A caption mismatch can be OCR noise. Retry before trusting continuity.
-            last = EditorIdentityConfirmed(view) ? view : null;
+            last = view.IsConfigurator && view.Editor != null && EditorIdentityConfirmed(view) ? view : null;
             ScenarioExecution.Log($"ReadCode: повторное подтверждение {attempt + 1}/3: модуль=«{_module}», заголовок=«{view.ModuleName ?? "?"}», редактор={view.Editor}, подтверждённая область={_confirmedEditor}, содержимое подтверждено={last != null}; снимок: {_path}");
             if (attempt < 2) await Task.Delay(options.PollIntervalMs, token);
         }
@@ -451,10 +456,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
 
     private bool EditorIdentityConfirmed(ConfiguratorView view) => SameModule(view.ModuleName) ||
         (_module != null && _confirmedEditor is { } confirmed && view.Editor is { } editor &&
-         SameEditorArea(confirmed, editor) &&
-         (OneCConfiguratorRecognizer.HasRoutineSyntax(view) || view.Labels.Any(l =>
-             editor.Contains(l.Bounds) &&
-             (l.Text.Contains(":=") || l.Text.Contains(';') || l.Text.TrimStart().StartsWith("//")))));
+         SameEditorArea(confirmed, editor));
 
     private static bool SameEditorArea(Rectangle confirmed, Rectangle current)
     {

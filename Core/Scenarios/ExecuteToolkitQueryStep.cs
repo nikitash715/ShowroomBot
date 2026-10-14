@@ -12,6 +12,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
     public string Name => $"Выполнить запрос Toolkit: {Path.GetFileNameWithoutExtension(definition.QueryFile)}";
     private readonly ToolkitConsoleRecognizer _recognizer = new(sectionRecognizer);
     private string _directory = string.Empty;
+    private Rectangle? _observedClientBounds;
 
     public async Task ExecuteAsync(CancellationToken cancellationToken = default)
     {
@@ -26,6 +27,8 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         var token = linked.Token;
         try
         {
+            var window = Activate(token);
+            await RdpController.EnsureFullScreenAsync(window, keyboard, token);
             // Open1C is a separate scenario step; use the client it left active in RDP.
             var (_, layout) = await Observe(token);
             if (layout.Editor != null && layout.Execute != null)
@@ -201,13 +204,16 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
                 timeout.Token.ThrowIfCancellationRequested();
                 var area = layout.Result ?? throw new InvalidOperationException("Toolkit: нижняя таблица результата исчезла.");
                 var point = new Point(area.Left + area.Width * 3 / 5, area.Top + area.Height / 2);
-                var screenPoint = screenshots.ClientToScreen(Activate(timeout.Token), point);
+                var window = Activate(timeout.Token);
+                VerifyObservedGeometry(window);
+                var screenPoint = screenshots.ClientToScreen(window, point);
                 if (!NativeMethods.GetCursorPos(out var cursor) || cursor.X != screenPoint.X || cursor.Y != screenPoint.Y)
                 {
                     await mouse.MoveToAsync(screenPoint, timeout.Token);
                     // Allow hover effects to settle only when the pointer actually moved.
                     await Task.Delay(Math.Min(200, definition.ScrollPauseMs), timeout.Token);
                 }
+                VerifyObservedGeometry(window);
                 var beforePath = Capture(timeout.Token);
                 if (ToolkitConsoleRecognizer.ScrollbarAtBottom(beforePath, area))
                 {
@@ -218,6 +224,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
                 // Avoid Ctrl+wheel zoom if a remote modifier release was delayed.
                 await keyboard.ReleaseControlAsync(timeout.Token);
                 timeout.Token.ThrowIfCancellationRequested();
+                VerifyObservedGeometry(window);
                 mouse.Scroll(-definition.ScrollNotches);
                 await Task.Delay(definition.ScrollPauseMs, timeout.Token);
                 var (path, next) = await Observe(timeout.Token);
@@ -258,24 +265,45 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         if (!rdp.TryActivateExistingWindow(out var window)) throw new InvalidOperationException("Toolkit: не удалось активировать RDP.");
         return window;
     }
-    private string Capture(CancellationToken token) => screenshots.CaptureClientArea(Activate(token), _directory);
+    private string Capture(CancellationToken token)
+    {
+        var window = Activate(token);
+        var bounds = WindowScreenshotService.GetClientScreenBounds(window);
+        var path = screenshots.CaptureClientArea(window, _directory);
+        if (bounds != WindowScreenshotService.GetClientScreenBounds(window))
+            throw new InvalidOperationException("Toolkit: RDP изменился во время снимка; требуется новое распознавание.");
+        _observedClientBounds = bounds;
+        return path;
+    }
     private async Task<(string Path, ToolkitConsoleLayout Layout)> Observe(CancellationToken token)
     {
         var path = Capture(token);
         var layout = await _recognizer.RecognizeAsync(path, token);
+        VerifyObservedGeometry(Activate(token));
         ScenarioExecution.Log($"Toolkit: распознано: вкладка={layout.ConsoleTab}, текст={layout.TextTab}, " +
             $"редактор={layout.Editor}, выполнить={layout.Execute}, результат={layout.Result}, строки={layout.RowCount}, " +
             $"busy={layout.Busy}, ошибка={layout.Error}; screenshot: {path}");
         return (path, layout);
     }
     private static Point Center(Rectangle region) => new(region.Left + region.Width / 2, region.Top + region.Height / 2);
-    private async Task Move(Point point, CancellationToken token) => await mouse.MoveToAsync(
-        screenshots.ClientToScreen(Activate(token), point),
-        token);
+    private void VerifyObservedGeometry(IntPtr window)
+    {
+        if (_observedClientBounds is not Rectangle expected ||
+            expected != WindowScreenshotService.GetClientScreenBounds(window))
+            throw new InvalidOperationException("Toolkit: размер или положение RDP изменились после OCR; ввод по устаревшим координатам отменён.");
+    }
+    private async Task Move(Point point, CancellationToken token)
+    {
+        var window = Activate(token);
+        VerifyObservedGeometry(window);
+        await mouse.MoveToAsync(screenshots.ClientToScreen(window, point), token);
+        VerifyObservedGeometry(window);
+    }
     private async Task Click(Rectangle region, CancellationToken token)
     {
         await Move(Center(region), token);
         token.ThrowIfCancellationRequested();
+        VerifyObservedGeometry(Activate(token));
         mouse.ClickLeft();
     }
 }
