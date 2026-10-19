@@ -49,7 +49,7 @@ public sealed class OneCSectionRecognizer
                 left + (l.Bounds.Right + scale - 1) / scale, top + (l.Bounds.Bottom + scale - 1) / scale))));
         }
         var view = OneCConfiguratorRecognizer.Analyze(source, labels);
-        if (view.Editor == null && OneCConfiguratorRecognizer.FindModuleCaptionRegion(source, view) is { } caption)
+        if (OneCConfiguratorRecognizer.FindModuleCaptionRegion(source, view) is { } caption)
         {
             // Full-screen OCR can drop the entire bold identifier on the grey MDI
             // caption. Recognize that narrow strip separately on a white background.

@@ -5,17 +5,19 @@ namespace ShowroomBot.Core.Scenarios;
 
 public sealed class ScenarioRunner
 {
-    private readonly ScenarioStepFactory _stepFactory;
+    private readonly IScenarioStepFactory _stepFactory;
     private readonly Func<string, string> _captureDesktop;
     private readonly Action _prepareLocal;
+    private readonly Action? _finishRdp;
     public event Action<ScenarioNotification>? ScenarioChanged;
 
-    public ScenarioRunner(ScenarioStepFactory stepFactory, Func<string, string>? captureDesktop = null,
-        Action? prepareLocal = null)
+    public ScenarioRunner(IScenarioStepFactory stepFactory, Func<string, string>? captureDesktop = null,
+        Action? prepareLocal = null, Action? finishRdp = null)
     {
         _stepFactory = stepFactory;
         _captureDesktop = captureDesktop ?? new WindowScreenshotService().CaptureDesktop;
         _prepareLocal = prepareLocal ?? Rdp.RdpController.MinimizeForLocalStep;
+        _finishRdp = finishRdp;
     }
 
     public async Task RunAsync(
@@ -84,6 +86,18 @@ public sealed class ScenarioRunner
                 catch (Exception screenshotError)
                 {
                     execution.Write($"Не удалось сохранить screenshot: {screenshotError.Message}");
+                }
+            }
+            if (scenario.RequiresRdp && _finishRdp != null)
+            {
+                try
+                {
+                    _finishRdp();
+                    execution.Write("RDP: свёрнут после завершения сценария.");
+                }
+                catch (Exception minimizeError)
+                {
+                    execution.Write($"Не удалось свернуть RDP после сценария: {minimizeError.Message}");
                 }
             }
             Notify(new(scenario.Name, outcome, error, path, execution.LogPath), execution);

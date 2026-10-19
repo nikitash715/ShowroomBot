@@ -7,13 +7,61 @@ using ShowroomBot.Windows;
 using ShowroomBot.Telegram;
 using ShowroomBot.Mail;
 using System.Net.Http;
+using System.Diagnostics;
+using System.Text.Json;
 
 namespace ShowroomBot;
 
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static int Main(string[] args)
+    {
+        string? reportDirectory = null;
+        var exitCode = 1;
+        string? error = null;
+        ScenarioNotification? outcome = null;
+        try
+        {
+            if (args.Length > 0)
+            {
+                reportDirectory = Path.GetFullPath(Path.Combine(".test-artifacts",
+                    $"cli-{DateTime.Now:yyyyMMdd-HHmmssfff}-{Environment.ProcessId}"));
+                Directory.CreateDirectory(reportDirectory);
+                ScenarioExecution.DiagnosticsRoot = reportDirectory;
+            }
+            var options = LaunchOptions.Parse(args);
+            using var instance = new Mutex(true, @"Local\ShowroomBot.SingleInstance", out var created);
+            // Also detect older builds that do not yet acquire the mutex.
+            using var own = Process.GetCurrentProcess();
+            var another = false;
+            foreach (var process in Process.GetProcessesByName("ShowroomBot"))
+                using (process)
+                    try { another |= process.Id != own.Id && process.SessionId == own.SessionId; }
+                    catch (InvalidOperationException) { }
+            if (!created || another) throw new InvalidOperationException("ShowroomBot is already running. Close it before starting another instance.");
+            exitCode = Run(options, notification => outcome = notification);
+        }
+        catch (Exception exception)
+        {
+            error = exception.Message;
+            if (args.Length == 0) MessageBox.Show(error, "ShowroomBot", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            if (reportDirectory is not null)
+            {
+                var report = new { status = exitCode == 0 ? "success" : exitCode == 2 ? "cancelled" : "error",
+                    exitCode, scenario = outcome?.Name, error = error ?? outcome?.Error,
+                    logPath = outcome?.LogPath, screenshotPath = outcome?.ScreenshotPath };
+                File.WriteAllText(Path.Combine(reportDirectory, "result.json"),
+                    JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
+            }
+        }
+        return exitCode;
+    }
+
+    private static int Run(LaunchOptions options, Action<ScenarioNotification> recordOutcome)
     {
         ApplicationConfiguration.Initialize();
         DiagnosticsCleanup.Clean(Path.Combine(AppContext.BaseDirectory, "diagnostics"));
@@ -29,6 +77,7 @@ internal static class Program
         }
         catch (Exception exception)
         {
+            if (options.Scenario is not null) throw;
             MessageBox.Show(
                 $"Не удалось загрузить сценарии: {exception.Message}",
                 "ShowroomBot",
@@ -36,6 +85,7 @@ internal static class Program
                 MessageBoxIcon.Error);
             scenarios = [];
         }
+        var selected = options.Scenario is null ? null : options.Select(scenarios);
 
         var idleDetector = new IdleDetector();
         var vpnDetector = new VpnDetector();
@@ -48,7 +98,14 @@ internal static class Program
                 .SendMailAsync(mail, token));
         var scenarioStepFactory = new ScenarioStepFactory(rdpController, keyboardInputSender,
             new MouseInputSender(settings.Automation.Mouse), new WindowScreenshotService(), new OneCSectionRecognizer(), checkMail);
-        var scenarioRunner = new ScenarioRunner(scenarioStepFactory);
+        var scenarioRunner = new ScenarioRunner(scenarioStepFactory,
+            finishRdp: options.TestSeries ? RdpController.MinimizeAfterScenario : null);
+        ScenarioNotification? latestOutcome = null;
+        if (options.Run) scenarioRunner.ScenarioChanged += notification =>
+        {
+            latestOutcome = notification;
+            recordOutcome(notification);
+        };
         var demoScenario = new DemoScenario(scenarioRunner);
         var demoController = new DemoController();
 
@@ -71,6 +128,49 @@ internal static class Program
         if (telegram.IsEnabled) scenarioRunner.ScenarioChanged += telegram.QueueNotification;
         Task telegramTask = Task.CompletedTask;
         mainForm.Shown += (_, _) => telegramTask = Task.Run(() => telegram.RunAsync(telegramCancellation.Token));
+        var exitCode = options.Run ? 2 : 0;
+        mainForm.Shown += async (_, _) =>
+        {
+            if (selected is not null) mainForm.SelectScenario(selected);
+            if (options.Run)
+            {
+                var results = new List<object>();
+                exitCode = await mainForm.RunFromCommandLineAsync(options.SeriesCount, options.TestSeries,
+                    async (index, code) =>
+                    {
+                        if (!options.TestSeries) return;
+                        var number = options.SeriesStart + index;
+                        results.Add(new { number, exitCode = code, error = latestOutcome?.Error,
+                            logPath = latestOutcome?.LogPath, screenshotPath = latestOutcome?.ScreenshotPath });
+                        await File.WriteAllTextAsync(Path.Combine(ScenarioExecution.DiagnosticsRoot, "series.json"),
+                            JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true }));
+                        var result = code == 0 ? "успешно" : code == 2 ? "остановлен" : $"ошибка: {latestOutcome?.Error}";
+                        try
+                        {
+                            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                            await telegram.SendDevelopmentReportAsync($"Запуск {number}: {result}.\n" +
+                                (index == options.SeriesCount - 1 || code != 0
+                                    ? "Тесты остановлены. ShowroomBot остаётся открыт. Инструкции: /codex ваш текст."
+                                    : "Серия продолжается. Остановка: /stop или Ctrl+Alt+F12."), timeout.Token);
+                        }
+                        catch (Exception)
+                        {
+                            if (latestOutcome?.LogPath is { } path)
+                                ScenarioExecution.WriteLog(path, "Telegram: не удалось доставить короткий отчёт серии.");
+                        }
+                    });
+                if (options.TestSeries && telegram.IsEnabled)
+                {
+                    try
+                    {
+                        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                        await telegram.SendDevelopmentReportAsync(
+                            "ShowroomBot остаётся открыт: отправьте /codex и текст инструкции. Ящик доступен активной сессии Codex.", timeout.Token);
+                    }
+                    catch (Exception) { /* Report delivery must not close the development session. */ }
+                }
+            }
+        };
         mainForm.FormClosed += (_, _) => telegramCancellation.Cancel();
         try { Application.Run(mainForm); }
         finally
@@ -79,5 +179,6 @@ internal static class Program
             telegramCancellation.Cancel();
             telegramTask.GetAwaiter().GetResult();
         }
+        return exitCode;
     }
 }

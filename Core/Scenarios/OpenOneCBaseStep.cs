@@ -34,7 +34,7 @@ public sealed class OpenOneCBaseStep : IScenarioStep
 
         var windowHandle = await _rdpController.OpenOrActivateAsync(cancellationToken);
         await RdpController.EnsureFullScreenAsync(windowHandle, _keyboardInputSender, cancellationToken);
-        using var inputGuard = RdpInputGuard.Require(windowHandle);
+        using var inputGuard = RdpInputGuard.RequireStrict(windowHandle);
 
         await DelayAsync(_definition.AfterActivationDelayMs, cancellationToken);
         var color = ParsePanelColor();
@@ -98,34 +98,32 @@ public sealed class OpenOneCBaseStep : IScenarioStep
         finally { File.Delete(path); }
     }
 
+
     private async Task<bool> FindExistingAsync(IntPtr handle, Color color, CancellationToken token)
     {
         var directory = ScenarioExecution.Current?.DirectoryPath ?? Path.Combine(AppContext.BaseDirectory,
             "diagnostics", $"open1c-windows-{DateTime.Now:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}");
-        for (var index = 0; index < _definition.MaxWindowsToCheck; index++)
+        var found = await RemoteWindowSearch.FindAsync(_definition.MaxWindowsToCheck, async ct =>
         {
-            token.ThrowIfCancellationRequested();
             EnsureRdpForeground(handle);
-            if (index > 0)
-            {
-                // Each selection moves the selected window to the MRU front. Incrementing
-                // the index visits the next window instead of alternating between two windows.
-                await _keyboardInputSender.SelectRemoteWindowAltTabAsync(index, token);
-                await DelayAsync(_definition.WindowSwitchDelayMs, token);
-                EnsureRdpForeground(handle);
-            }
+            await _keyboardInputSender.SelectNextRemoteWindowAsync(ct);
+            await DelayAsync(_definition.WindowSwitchDelayMs, ct);
+        }, async (index, ct) =>
+        {
+            EnsureRdpForeground(handle);
             var timer = Stopwatch.StartNew();
             var path = _screenshots.CaptureClientArea(handle, directory);
-            var result = await OneCBaseRecognizer.RecognizeWindowAsync(path, color, _definition.ColorTolerance, token);
-            token.ThrowIfCancellationRequested();
+            var result = await OneCBaseRecognizer.RecognizeWindowAsync(path, color, _definition.ColorTolerance, ct);
+            ct.ThrowIfCancellationRequested();
             EnsureRdpForeground(handle);
             ScenarioExecution.Log($"Open1C: окно {index + 1}/{_definition.MaxWindowsToCheck}: {result.Description}; " +
                 $"нужный клиент {(result.IsTargetClient ? "найден" : "не найден")}; " +
                 $"распознавание {timer.Elapsed.TotalSeconds:F3} с; screenshot: {path}");
-            if (result.IsTargetClient) return true;
             // Similar screenshots are not proof of a completed cycle: two different
             // windows may look identical. Only the configured bound ends this search.
-        }
+            return result.IsTargetClient;
+        }, token);
+        if (found) return true;
         ScenarioExecution.Log($"Open1C: проверено {_definition.MaxWindowsToCheck} окон; нужный клиент не найден, запускаем новый");
         return false;
     }

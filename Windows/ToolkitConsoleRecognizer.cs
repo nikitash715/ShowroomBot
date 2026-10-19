@@ -75,11 +75,15 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
                     Reason = layout.TextTab == null ? "Text tab not confirmed; toolbar search is unsafe" :
                         "Execute missing or ambiguous in confirmed toolbar", LabelsInScreenshot = labels },
                     new JsonSerializerOptions { WriteIndented = true }), token);
-        if (layout.RowCount == 0 && layout.Result != null)
+        if ((!layout.RowCount.HasValue || layout.RowCount == 0) && layout.Result != null)
         {
             var heading = labels.First(l => Regex.IsMatch(l.Text, @"Результат\s*\(", RegexOptions.IgnoreCase));
+            // Full-frame OCR may return only «Результат (Таблица,» as a
+            // separate fragment. Include the remainder of that same row;
+            // enlarging the fragment alone can never recover the row count.
             var region = Rectangle.Intersect(new Rectangle(heading.Bounds.Left - 4, heading.Bounds.Top - 4,
-                heading.Bounds.Width + 8, heading.Bounds.Height + 8), new Rectangle(Point.Empty, image.Size));
+                Math.Max(heading.Bounds.Width + 8, heading.Bounds.Height * 40), heading.Bounds.Height + 8),
+                new Rectangle(Point.Empty, image.Size));
             using var crop = new Bitmap(region.Width * 2, region.Height * 2);
             using (var graphics = Graphics.FromImage(crop))
             {
@@ -90,7 +94,9 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
             crop.Save(cropPath, ImageFormat.Png);
             var headings = await ocr.ReadLinesAsync(cropPath, token);
             var corrected = headings.Where(l => Regex.IsMatch(l.Text, @"Результат\s*\(", RegexOptions.IgnoreCase))
-                .Select(l => new RecognizedText(l.Text, heading.Bounds)).ToArray();
+                .Select(l => new RecognizedText(l.Text, new Rectangle(
+                    region.Left + l.Bounds.Left / 2, region.Top + l.Bounds.Top / 2,
+                    (l.Bounds.Width + 1) / 2, (l.Bounds.Height + 1) / 2))).ToArray();
             layout = Analyze(image, corrected.Concat(labels).ToArray(), token);
         }
         return layout;
@@ -113,8 +119,9 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
         // sees only the full form heading; confirm it using the toolbar below.
         if (toolkitConfirmed && formTitle == null && tabTitle != null &&
             tabTitle.Bounds.Top > tabTitle.Bounds.Height * 3 &&
-            labels.Any(l => l.Text.Trim() == "Выполнить" && l.Bounds.Top > tabTitle.Bounds.Bottom) &&
-            labels.Any(l => l.Text.Trim() == "Текст" && l.Bounds.Top > tabTitle.Bounds.Bottom))
+            labels.Any(l => l.Text.Trim() == "Текст" && l.Bounds.Top > tabTitle.Bounds.Bottom) &&
+            labels.Any(l => l.Text.Contains("Параметры", StringComparison.OrdinalIgnoreCase) &&
+                l.Bounds.Top > tabTitle.Bounds.Bottom))
             formTitle = tabTitle;
         if (tab is Rectangle tabBounds)
         {
@@ -160,10 +167,13 @@ public sealed class ToolkitConsoleRecognizer(OneCSectionRecognizer ocr)
              l.Text.Contains("Выполняется запрос", StringComparison.OrdinalIgnoreCase) || l.Text.Trim() == "Прервать"));
         var stamp = string.Join("|", labels.Where(l => execute != null && text != null &&
             l.Bounds.Top >= execute.Bounds.Top - execute.Bounds.Height && l.Bounds.Bottom < text.Bounds.Top &&
-            l.Bounds.Left > execute.Bounds.Right && Regex.IsMatch(l.Text.Trim(), @"^\d+([.,]\d+)?\s*(мс|мсек|сек|ms|s)\b"))
+            l.Bounds.Left > execute.Bounds.Right && IsExecutionTime(l.Text))
             .Select(l => l.Text.Trim()).Distinct());
         return new(tab, text?.Bounds, execute?.Bounds, editor, table, rows, busy, error, stamp);
     }
+
+    public static bool IsExecutionTime(string text) =>
+        Regex.IsMatch(text.Trim(), @"^\d+([.,]\d+)?\s*(мс|мсек|сек|с|ms|s)\b");
 
     public static bool IsExecuteCaption(string value)
     {

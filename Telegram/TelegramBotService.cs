@@ -14,6 +14,7 @@ namespace ShowroomBot.Telegram;
 public sealed class TelegramBotService
 {
     private readonly HttpClient _http;
+    private readonly DevelopmentMailbox _development;
     private readonly TelegramSettings _settings;
     private readonly Func<CancellationToken, Task<string>> _start;
     private readonly Func<CancellationToken, Task<string>> _stop;
@@ -24,7 +25,9 @@ public sealed class TelegramBotService
     private static readonly object MainMenu = Keyboard(
         ["Запустить демонстрацию", "Остановить демонстрацию"],
         ["Скриншот", "Статус"],
-        ["Автозапуск", "Подключить VPN"]);
+        ["Автозапуск", "Подключить VPN"], ["Разработка"]);
+    private static readonly object DevelopmentMenu = Keyboard(
+        ["Отчёт серии", "Инструкция Codex"], ["Главное меню"]);
     private static readonly object AutoStartMenu = Keyboard(
         ["Включить автозапуск", "Выключить автозапуск"],
         ["Бездействие 5 мин", "Бездействие 10 мин", "Бездействие 15 мин"],
@@ -45,9 +48,11 @@ public sealed class TelegramBotService
         Func<CancellationToken, Task<string>> stop, Func<string, string> captureDesktop,
         Func<bool?, int?, CancellationToken, Task<string>>? configureAutoStart = null,
         Func<CancellationToken, Task<string>>? connectVpn = null,
-        Func<CancellationToken, Task<string>>? status = null)
+        Func<CancellationToken, Task<string>>? status = null,
+        string? developmentDirectory = null)
     {
         _http = http;
+        _development = new(developmentDirectory ?? Path.Combine(Environment.CurrentDirectory, ".test-artifacts", "development"));
         _settings = settings;
         _start = start;
         _stop = stop;
@@ -61,12 +66,22 @@ public sealed class TelegramBotService
     {
         // Fail closed. Also prevent a malformed token from changing the request URL.
         if (!IsEnabled) return;
-        await Task.WhenAll(PollAsync(cancellationToken), SendNotificationsAsync(cancellationToken));
+        // Stopping the UI/polling must not cancel the final queued outcome.
+        using var deliveryCancellation = new CancellationTokenSource();
+        var delivery = SendNotificationsAsync(deliveryCancellation.Token);
+        try { await PollAsync(cancellationToken); }
+        finally
+        {
+            _notifications.Writer.TryComplete();
+            deliveryCancellation.CancelAfter(TimeSpan.FromSeconds(45));
+            await delivery;
+        }
     }
 
     private async Task PollAsync(CancellationToken cancellationToken)
     {
         long offset = 0;
+        var startedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var initialized = false;
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -74,12 +89,14 @@ public sealed class TelegramBotService
             {
                 if (!initialized)
                 {
-                    // Old commands must not unexpectedly start automation after a restart.
+                    // Preserve queued development instructions across application restarts.
                     using var reset = await CallAsync("deleteWebhook",
-                        JsonContent.Create(new { drop_pending_updates = true }), cancellationToken);
+                        JsonContent.Create(new { drop_pending_updates = false }), cancellationToken);
                     initialized = true;
                 }
 
+                await _development.DeliverPendingReportAsync(
+                    (text, token) => SendTextAsync(text, token, DevelopmentMenu), cancellationToken);
                 using var updates = await CallAsync("getUpdates", JsonContent.Create(new
                 {
                     offset, timeout = 25, allowed_updates = new[] { "message" }
@@ -93,6 +110,12 @@ public sealed class TelegramBotService
                     offset = id + 1;
                     if (update.TryGetProperty("message", out var message))
                     {
+                        // Old automation commands must not start UI work after a restart.
+                        // Explicit /codex instructions are passive and can safely be retained.
+                        var isDevelopmentInstruction = message.TryGetProperty("text", out var pendingText) &&
+                            (pendingText.GetString()?.Trim().StartsWith("/codex ", StringComparison.Ordinal) ?? false);
+                        if (!isDevelopmentInstruction && message.TryGetProperty("date", out var date) &&
+                            date.GetInt64() < startedAt) continue;
                         try { await HandleMessageAsync(message, cancellationToken); }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception) { /* A failed reply must not discard the rest of this batch. */ }
@@ -136,11 +159,15 @@ public sealed class TelegramBotService
             "Бездействие 60 мин" => "/idle 60",
             "Другой интервал" => "/idle help",
             "Главное меню" => "/menu",
+            "Разработка" => "/development",
+            "Отчёт серии" => "/devreport",
+            "Инструкция Codex" => "/codex",
             _ => input
         };
         var words = input?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries) ?? [];
         var command = words.FirstOrDefault();
-        var menu = command is "/autostart" or "/idle" ? AutoStartMenu : MainMenu;
+        var menu = command is "/development" or "/devreport" or "/codex" ? DevelopmentMenu
+            : command is "/autostart" or "/idle" ? AutoStartMenu : MainMenu;
         // Commands in private chat do not require a bot username suffix.
         string result;
         try
@@ -151,6 +178,9 @@ public sealed class TelegramBotService
                     "/status — состояние ShowroomBot, VPN и RDP\n/vpn — подключить первый VPN из config.yaml\n/menu — кнопочное меню\n" +
                     "/autostart on|off — включить/выключить автозапуск\n/autostart status — состояние и интервал\n/idle N — интервал бездействия (1–1440 минут)\n" +
                     "О начале сценария придёт уведомление с названием. По завершении, ошибке или остановке — результат и снимок экрана.",
+                "/development" => "Разработка: отчёт серии — /devreport. Инструкция для активной сессии Codex — /codex ваш текст. Сообщение сохраняется для чтения агентом; завершённый чат автоматически не возобновляется.",
+                "/devreport" => _development.ReadReport(),
+                "/codex" => SaveDevelopmentInstruction(input!, message),
                 "/demo" => await _start(cancellationToken),
                 "/stop" => await _stop(cancellationToken),
                 "/screenshot" => string.Empty,
@@ -171,6 +201,14 @@ public sealed class TelegramBotService
         await SendTextAsync(result, cancellationToken, menu);
     }
 
+    private string SaveDevelopmentInstruction(string input, JsonElement message)
+    {
+        var instruction = input.Length > 6 ? input[6..].Trim() : "";
+        if (instruction.Length == 0) return "Отправьте /codex и текст инструкции одним сообщением.";
+        _development.SaveInstruction(_settings.AllowedUserId, message.GetProperty("message_id").GetInt64(), instruction);
+        return "Инструкция сохранена для активной сессии Codex. Это подтверждение приёма, выполнение ещё не началось.";
+    }
+
     private Task<string> ConfigureAutoStartAsync(string[] words, CancellationToken token)
     {
         if (_configureAutoStart is null) return Task.FromResult("Управление автозапуском недоступно.");
@@ -187,6 +225,14 @@ public sealed class TelegramBotService
     public void QueueNotification(ScenarioNotification notification)
     {
         if (IsEnabled && _settings.NotifyDemoEvents) _notifications.Writer.TryWrite(notification);
+    }
+
+    public async Task SendDevelopmentReportAsync(string text, CancellationToken token)
+    {
+        if (!IsEnabled) throw new InvalidOperationException("Telegram не настроен.");
+        await SendTextAsync(text, token, DevelopmentMenu);
+        Directory.CreateDirectory(_development.DirectoryPath);
+        await File.WriteAllTextAsync(Path.Combine(_development.DirectoryPath, "report.txt"), text, token);
     }
 
     private async Task SendNotificationsAsync(CancellationToken token)
@@ -208,16 +254,34 @@ public sealed class TelegramBotService
                     text += "\nНе удалось получить снимок текущего экрана.";
                 // Each part is independent: a failed upload must not hide the error text,
                 // and failed text delivery must not prevent sending the available screenshot.
-                try { await SendTextAsync(text, token); }
+                try
+                {
+                    await SendTextAsync(text, token);
+                    LogDeliverySuccess(notification, "сообщение");
+                }
                 catch (Exception) when (!token.IsCancellationRequested) { LogDeliveryFailure(notification); }
                 if (_settings.NotifyDemoEvents && notification.ScreenshotPath is { } path)
                 {
-                    try { await SendDocumentAsync(path, token); }
+                    try
+                    {
+                        await SendDocumentAsync(path, token);
+                        LogDeliverySuccess(notification, "снимок");
+                    }
                     catch (Exception) when (!token.IsCancellationRequested) { LogDeliveryFailure(notification); }
                 }
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+    }
+
+    private static void LogDeliverySuccess(ScenarioNotification notification, string part)
+    {
+        try
+        {
+            if (notification.LogPath is { } path)
+                ScenarioExecution.WriteLog(path, $"Telegram: отправлено {part} ({notification.Outcome}).");
+        }
+        catch (Exception) { /* Delivery diagnostics cannot affect automation. */ }
     }
 
     private static void LogDeliveryFailure(ScenarioNotification notification)

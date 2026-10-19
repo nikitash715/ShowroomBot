@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using ShowroomBot.Core.Scenarios;
 
 namespace ShowroomBot.Mail;
@@ -7,7 +8,6 @@ namespace ShowroomBot.Mail;
 /// <summary>Classic Outlook automation on a dedicated STA. No RDP input, OCR or screenshots.</summary>
 public sealed class LocalOutlookInboxReader : IOutlookInboxReader
 {
-    private const string Executable = @"C:\Program Files\Microsoft Office\root\Office16\OUTLOOK.EXE";
     private static readonly Guid ApplicationClsid = new("0006F03A-0000-0000-C000-000000000046");
 
     public Task<IReadOnlyList<OutlookMail>> ReadUnreadInboxAsync(CancellationToken cancellationToken)
@@ -78,15 +78,38 @@ public sealed class LocalOutlookInboxReader : IOutlookInboxReader
     {
         token.ThrowIfCancellationRequested();
         if (LocalProcessIds().Count > 0) return;
-        if (!File.Exists(Executable))
-            throw new FileNotFoundException($"CheckMail: классический Outlook не найден: {Executable}");
+        var executable = FindExecutable();
         ScenarioExecution.Perform(() =>
         {
             token.ThrowIfCancellationRequested();
-            // Start for COM automation without opening a mail window or changing its view.
+            // A normal visible launch initializes the profile and the Explorer window.
+            // /embedding can leave a cold start waiting without a usable mail session.
             if (LocalProcessIds().Count == 0)
-                using (Process.Start(new ProcessStartInfo(Executable, "/embedding") { UseShellExecute = true })) { }
+            {
+                ScenarioExecution.Log("CheckMail: запускаем классический Outlook.");
+                using (Process.Start(new ProcessStartInfo(executable, "/recycle") { UseShellExecute = true })) { }
+            }
         });
+    }
+
+    private static string FindExecutable()
+    {
+        foreach (var hive in new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine })
+        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+        {
+            using var root = RegistryKey.OpenBaseKey(hive, view);
+            using var key = root.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE");
+            var path = (key?.GetValue(null) as string)?.Trim().Trim('"');
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) return path;
+        }
+        foreach (var folder in new[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86) })
+        foreach (var office in new[] { @"Microsoft Office\root\Office16", @"Microsoft Office\Office16" })
+        {
+            var path = Path.Combine(folder, office, "OUTLOOK.EXE");
+            if (File.Exists(path)) return path;
+        }
+        throw new FileNotFoundException("CheckMail: классический Outlook не найден. Установите Outlook с поддержкой COM и настройте профиль.");
     }
 
     private static HashSet<uint> LocalProcessIds()

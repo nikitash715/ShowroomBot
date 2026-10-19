@@ -9,6 +9,37 @@ public sealed record TreeToggle(Point Center, bool IsExpanded);
 
 public static class OneCConfiguratorRecognizer
 {
+    // OCR changes the dock-caption height when a module tab closes. Its left,
+    // right and bottom divider remain fixed; this is not a moved RDP window.
+    public static bool SameTreeDock(Rectangle first, Rectangle next) =>
+        first.Left == next.Left && first.Right == next.Right && first.Bottom == next.Bottom &&
+        Math.Abs(first.Top - next.Top) <= 24;
+
+    public static bool HasTreeDockPixels(Bitmap image, Rectangle tree)
+    {
+        var divider = tree.Right + 2;
+        if (tree.Left != 2 || tree.Width < 160 || divider + 3 >= image.Width ||
+            tree.Top < 0 || tree.Bottom > image.Height) return false;
+        var samples = 0;
+        var edge = 0;
+        var white = 0;
+        for (var y = tree.Top + 24; y < tree.Bottom - 5; y += 5)
+        {
+            samples++;
+            if (!White(image.GetPixel(divider, y)) && !White(image.GetPixel(divider + 1, y)) &&
+                !White(image.GetPixel(divider + 3, y))) edge++;
+            for (var offset = 20; offset <= 140; offset += 4)
+                if (White(image.GetPixel(divider - offset, y))) white++;
+        }
+        return samples > 0 && edge > samples * .8 && white > samples * 31 * .6;
+    }
+
+    public static bool HasRepositoryConnectionDialog(IReadOnlyList<RecognizedText> labels) => labels.Any(l =>
+        l.Text.Contains("Соединение с хранилищем", StringComparison.OrdinalIgnoreCase));
+
+    public static bool IsReadyForMetadata(ConfiguratorView view) =>
+        view.IsConfigurator && view.Tree != null && !HasRepositoryConnectionDialog(view.Labels);
+
     // Prefer whole rows over the overlapping words/lines returned by multi-scale OCR.
     public static IReadOnlyList<RecognizedText> TreeRows(IReadOnlyList<RecognizedText> labels, Rectangle tree)
         => MergeRows(labels, tree, tree.Top + 24);
@@ -59,7 +90,18 @@ public static class OneCConfiguratorRecognizer
     {
         // OCR may include the document icon before a child caption. Allow that
         // variation, but exclude right-hand controls before merging OCR fragments.
-        var rows = TreeRows(labels.Where(l => l.Bounds.Left <= indent + 64).ToArray(), tree);
+        // Merge the complete row before testing its indentation. Filtering each
+        // OCR fragment by indentation discarded the name after a separate CRM_
+        // prefix and turned full module rows into truncated identifiers.
+        // Exclude only the right-hand status icons before merging.
+        // OCR sometimes reads a document icon as a separate Е/Э/Т. Drop that
+        // leftmost fragment and its composite line; the individual caption
+        // words remain. Otherwise the icon looks like a sibling category and
+        // incorrectly ends the entire module list.
+        var captionLabels = labels.Where(l => l.Bounds.Left < tree.Right - 24 &&
+            !(l.Bounds.Left <= indent + 5 && Regex.IsMatch(l.Text.Trim(), @"^[ЕEЭТ](?:\s|$)"))).ToArray();
+        var rows = TreeRows(captionLabels, tree)
+            .Where(r => r.Bounds.Left <= indent + 64).ToArray();
         var fromY = parent?.Bounds.Bottom ?? tree.Top;
         var toY = rows.Where(r => r.Bounds.Top >= fromY && r.Bounds.Left <= indent + 5)
             .Select(r => r.Bounds.Top).DefaultIfEmpty(tree.Bottom).Min();
@@ -67,6 +109,12 @@ public static class OneCConfiguratorRecognizer
             .Select(r => r with { Text = ModuleRowName(r.Text) })
             .Where(r => Regex.IsMatch(r.Text, @"^[\p{L}_][\p{L}\p{Nd}_]*$")).ToArray();
     }
+
+    public static int CommonModulesIndent(IReadOnlyList<RecognizedText> labels, RecognizedText parent) =>
+        labels.Where(l => Normalize(l.Text) == "ОБЩИЕ" && l.Bounds.Left >= parent.Bounds.Left &&
+                Math.Abs((l.Bounds.Top + l.Bounds.Bottom) - (parent.Bounds.Top + parent.Bounds.Bottom)) <=
+                    Math.Max(6, parent.Bounds.Height))
+            .Select(l => l.Bounds.Left).DefaultIfEmpty(parent.Bounds.Left).Min();
 
     public static RecognizedText? FindCommonModuleFocusRow(IReadOnlyList<RecognizedText> labels, Rectangle tree,
         RecognizedText? parent, int indent) =>
@@ -83,11 +131,32 @@ public static class OneCConfiguratorRecognizer
     }
 
     public static string CanonicalModuleName(string name) =>
-        Regex.Replace(name, @"^(?:сям|сrм|сrm|crm)_", "CRM_", RegexOptions.IgnoreCase);
+        Regex.Replace(name, @"^(?i:сям|сам|[cс][rр][mм])(?:_|(?=[\p{Lu}]))", "CRM_");
 
-    public static IReadOnlyList<RecognizedText> VisibleRoutines(ConfiguratorView view) =>
-        view.Editor is { } editor ? view.Labels.Where(l => editor.Contains(l.Bounds) &&
-            Regex.IsMatch(l.Text.Trim(), @"^(?:Процедура|Функция|Procedure|Function)\s+[\p{L}_][\p{L}\p{Nd}_]*\s*\(", RegexOptions.IgnoreCase)).ToArray() : [];
+    public static IReadOnlyList<RecognizedText> VisibleRoutines(ConfiguratorView view)
+    {
+        if (view.Editor is not { } editor) return [];
+        var labels = view.Labels.Where(l => editor.Contains(l.Bounds)).ToArray();
+        static bool Declaration(string text) => Regex.IsMatch(text.Trim(),
+            @"^(?:Процедура|Функция|Procedure|Function)\s+[\p{L}_][\p{L}\p{Nd}_]*(?:\s+[\p{L}_][\p{L}\p{Nd}_]*)*\s*\(", RegexOptions.IgnoreCase);
+        var routines = labels.Where(l => Declaration(l.Text)).ToList();
+        // Syntax colours can make Windows OCR split the red keyword and blue
+        // identifier into different lines. Join only aligned, adjacent fragments
+        // inside the already detected editor, never arbitrary function calls.
+        foreach (var keyword in labels.Where(l => Regex.IsMatch(l.Text.Trim(),
+                     @"^(?:Процедура|Функция|Procedure|Function)$", RegexOptions.IgnoreCase)))
+        {
+            var name = labels.Where(l => l.Bounds.Left >= keyword.Bounds.Right - 2 &&
+                l.Bounds.Left - keyword.Bounds.Right <= keyword.Bounds.Height * 4 &&
+                Math.Abs((l.Bounds.Top + l.Bounds.Bottom) - (keyword.Bounds.Top + keyword.Bounds.Bottom)) <=
+                    Math.Max(6, keyword.Bounds.Height) &&
+                Regex.IsMatch(l.Text.Trim(), @"^[\p{L}_][\p{L}\p{Nd}_]*(?:\s+[\p{L}_][\p{L}\p{Nd}_]*)*\s*\("))
+                .OrderBy(l => l.Bounds.Left).ThenByDescending(l => l.Text.Length).FirstOrDefault();
+            if (name != null)
+                routines.Add(new(keyword.Text.Trim() + " " + name.Text.Trim(), Rectangle.Union(keyword.Bounds, name.Bounds)));
+        }
+        return routines.DistinctBy(l => Normalize(l.Text)).ToArray();
+    }
 
     public static bool HasRoutineSyntax(ConfiguratorView view) => VisibleRoutines(view).Count > 0;
 
@@ -99,7 +168,7 @@ public static class OneCConfiguratorRecognizer
     {
         // Compare declarations by name, ignoring OCR whitespace, order, parameters and coordinates.
         static HashSet<string> Names(ConfiguratorView view) => VisibleRoutines(view)
-            .Select(r => Regex.Match(r.Text.Trim(), @"^\S+\s+(?<name>[\p{L}_][\p{L}\p{Nd}_]*)\s*\(").Groups["name"].Value)
+            .Select(r => Regex.Match(r.Text.Trim(), @"^\S+\s+(?<name>[\p{L}_][\p{L}\p{Nd}_]*(?:\s+[\p{L}_][\p{L}\p{Nd}_]*)*)\s*\(").Groups["name"].Value)
             .Select(Normalize).ToHashSet(StringComparer.Ordinal);
         var previous = Names(before);
         var current = Names(after);
@@ -145,11 +214,11 @@ public static class OneCConfiguratorRecognizer
         // The small bold caption often loses letters in "Общий" and confuses
         // "л/ь" with "ј/ъ". Keep both module words and the name/colon structure.
         var match = Regex.Match(text,
-            @"^.+?\s+(?<kind>\S+)\s+(?<name>[\p{L}\p{Nd}_]+)\s*:\s*(?<suffix>[\p{L}]+)(?:\s|$)",
+            @"^.+?\s+(?<kind>\S+)\s+(?<name>[\p{L}\p{Nd}_]+(?:\s+[\p{L}\p{Nd}_]+)*)\s*[:.]\s*(?<suffix>[\p{L}]+)(?:\s|$)",
             RegexOptions.IgnoreCase);
         return match.Success && EditDistance(Normalize(match.Groups["kind"].Value), "МОДУЛЬ") <= 2 &&
             EditDistance(Normalize(match.Groups["suffix"].Value), "МОДУЛЬ") <= 2
-            ? CanonicalModuleName(match.Groups["name"].Value) : null;
+            ? CanonicalModuleName(Regex.Replace(match.Groups["name"].Value, @"\s+", "")) : null;
     }
 
     public static TreeToggle? FindTreeToggle(Bitmap image, Rectangle tree, RecognizedText node)
@@ -244,9 +313,9 @@ public static class OneCConfiguratorRecognizer
         if (title == null || menu == null || !debug) return new(false, null, null, null, labels);
 
         Rectangle? tree = null;
-        var treeHeading = labels.FirstOrDefault(l => IsConfigurationHeading(l.Text) &&
+        var treeHeading = labels.Where(l => IsConfigurationHeading(l.Text) &&
             l.Bounds.Left < image.Width / 6 && l.Bounds.Top > menu.Bounds.Bottom + 10 &&
-            l.Bounds.Top < image.Height / 2);
+            l.Bounds.Top < image.Height / 2).OrderBy(l => l.Bounds.Top).ThenBy(l => l.Bounds.Height).FirstOrDefault();
         // Open extension docks use the extension name as their heading.
         treeHeading ??= labels.FirstOrDefault(l => l.Bounds.Left < image.Width / 6 &&
             l.Bounds.Top > menu.Bounds.Bottom + 10 && l.Bounds.Top < image.Height / 3 &&
@@ -266,6 +335,14 @@ public static class OneCConfiguratorRecognizer
             var dockBottom = FindMainConfigurationTab(labels, image.Size)?.Bounds.Top - 3 ?? image.Height - 65;
             // The main configuration dock has a white tree and a continuous right divider.
             var top = treeHeading.Bounds.Bottom + treeHeading.Bounds.Height * 3;
+            // OCR can merge the caption and search strip into a tall box.
+            // The dock toolbar gives an independent, compact vertical anchor.
+            var toolbar = labels.Where(l => Normalize(l.Text) == "ДЕЙСТВИЯ" &&
+                    l.Bounds.Left < image.Width / 6 && l.Bounds.Top > menu.Bounds.Bottom + 30 &&
+                    l.Bounds.Top < image.Height / 3 && l.Bounds.Height <= menu.Bounds.Height * 2)
+                .OrderBy(l => l.Bounds.Top).ThenBy(l => l.Bounds.Height).FirstOrDefault();
+            if (toolbar != null)
+                top = toolbar.Bounds.Bottom + Math.Max(3, toolbar.Bounds.Height / 2);
             for (var x = Math.Max(160, treeHeading.Bounds.Right + 20); x < image.Width / 2; x++)
             {
                 var votes = 0;

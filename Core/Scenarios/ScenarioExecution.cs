@@ -46,10 +46,11 @@ public sealed class ScenarioExecution : IDisposable
     internal IntPtr RdpWindow { get; set; }
     public ScenarioExecutionContext ExecutionContext { get; internal set; }
     public string LogPath => Path.Combine(DirectoryPath, "scenario.log");
+    public static string DiagnosticsRoot { get; set; } = Path.Combine(AppContext.BaseDirectory, "diagnostics");
 
     public ScenarioExecution(CancellationToken cancellationToken)
     {
-        DirectoryPath = Path.Combine(AppContext.BaseDirectory, "diagnostics",
+        DirectoryPath = Path.Combine(DiagnosticsRoot,
             $"scenario-{DateTime.Now:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(DirectoryPath);
         _source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

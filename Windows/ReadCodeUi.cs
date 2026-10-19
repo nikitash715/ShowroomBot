@@ -16,13 +16,17 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
     private Size _size;
     private readonly Queue<string> _extensionTabs = new();
     private bool _tabsInitialized;
-    private bool _selectedModule;
     private bool _openedByAppearance;
     private Rectangle? _confirmedEditor;
+    private Rectangle _observedClientBounds;
+    private readonly string[] _prefixes = ReadCodeModulePrefixes.Load(AppContext.BaseDirectory);
+    private TreeFocusSnapshot? _lastFocus;
+    private RecognizedText[] _lastFocusRows = [];
 
     public async Task AttachAsync(CancellationToken token)
     {
         _handle = await rdp.OpenOrActivateAsync(token);
+        await RdpController.EnsureFullScreenAsync(_handle, keyboard, token);
         _directory = ScenarioExecution.Current?.DirectoryPath ?? Path.Combine(AppContext.BaseDirectory,
             "diagnostics", $"read-code-{Guid.NewGuid():N}");
         using var guard = RdpInputGuard.RequireStrict(_handle);
@@ -64,7 +68,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                 LogTreeSearch(view, "Общие модули", modules, attempt + 1);
                 if (modules != null)
                 {
-                    _moduleIndent = modules.Bounds.Left;
+                    _moduleIndent = OneCConfiguratorRecognizer.CommonModulesIndent(view.Labels, modules);
                     if (ModuleRows(view, modules).Length == 0)
                     {
                         await ExpandTreeNodeAsync(modules, ct);
@@ -76,7 +80,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                             LogTreeSearch(view, "Общие модули после клика по +", modules, attempt + 1);
                             if (modules != null)
                             {
-                                _moduleIndent = modules.Bounds.Left;
+                                _moduleIndent = OneCConfiguratorRecognizer.CommonModulesIndent(view.Labels, modules);
                                 if (ModuleRows(view, modules).Length > 0) break;
                             }
                         }
@@ -153,7 +157,6 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
             view = await RequireConfiguratorAsync(token);
             if (view.Tree == null) continue;
             ScenarioExecution.Log($"ReadCode: в основной/предыдущей конфигурации мало кода; пробуем открытое расширение «{name}».");
-            _selectedModule = false;
             await OpenCommonModulesAsync(token);
             return true;
         }
@@ -165,20 +168,23 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
         var seconds = Math.Min(30, options.ScrollTimeoutSeconds);
         budget.CancelAfter(TimeSpan.FromSeconds(seconds));
-        try { return await OpenRandomModuleCoreAsync(visited, budget.Token); }
+        try { return await OpenRandomModuleCoreAsync(visited, budget.Token, token); }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         {
             throw new TimeoutException($"ReadCode: поиск/открытие общего модуля превысило {seconds} с. Снимок: {_path}");
         }
     }
 
-    private async Task<string?> OpenRandomModuleCoreAsync(ISet<string> visited, CancellationToken token)
+    private async Task<string?> OpenRandomModuleCoreAsync(ISet<string> visited, CancellationToken token,
+        CancellationToken readinessToken)
     {
         using var guard = RdpInputGuard.RequireStrict(_handle);
         var view = await RequireConfiguratorAsync(token);
         var down = Random.Shared.Next(100) < 70;
-        var changePosition = !_selectedModule || Random.Shared.Next(100) < 50;
+        var changePosition = true;
+        string? matchedPrefix = null;
         string? previous = null;
+        var selectionSkipped = new HashSet<string>(visited, StringComparer.OrdinalIgnoreCase);
         for (var attempt = 0; attempt < Math.Min(12, options.MaxScrollAttempts); attempt++)
         {
             view = await RequireConfiguratorAsync(token);
@@ -189,25 +195,34 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
             if (changePosition)
             {
                 changePosition = false;
-                // A click cannot prove remote keyboard focus. Never type search anchors.
-                // Wheel navigation cannot insert text even if the editor retains focus.
+                matchedPrefix = await TryJumpToRandomPrefixAsync(view, parent, token);
+                if (matchedPrefix != null) continue;
                 ScenarioExecution.Log("ReadCode: случайная прокрутка дерева без текстового ввода.");
                 await ScrollTreeAsync((down ? -1 : 1) * Random.Shared.Next(4, 13), token);
                 continue;
             }
-            var candidates = ModuleRows(view, parent).Where(l => !visited.Contains(l.Text) &&
-                !l.Text.EndsWith('_')).ToArray();
+            var candidates = ReadCodeModulePrefixes.Candidates(ModuleRows(view, parent), selectionSkipped, matchedPrefix);
+            // No unvisited match: continue the existing OCR/scroll search.
+            matchedPrefix = null;
             if (candidates.Length > 0)
             {
                 var candidate = candidates[Random.Shared.Next(candidates.Length)];
                 ScenarioExecution.Log($"ReadCode: открываем общий модуль «{candidate.Text}»; кандидатов: {candidates.Length}.");
-                var beforeOpening = view;
+                // Selecting the last visible row can scroll it into view. Never send
+                // the second click using coordinates from before that selection.
+                var selection = await SelectModuleAsync(candidate, token);
+                if (selection is null)
+                {
+                    selectionSkipped.Add(candidate.Text);
+                    ScenarioExecution.Log($"ReadCode: строка «{candidate.Text}» исчезла/не выделена после прокрутки; выбираем другой модуль по свежему снимку.");
+                    continue;
+                }
+                var (beforeOpening, selected) = selection.Value;
                 _openedByAppearance = false;
                 _confirmedEditor = null;
-                ScenarioExecution.Log($"ReadCode: двойной клик по модулю «{candidate.Text}», строка {candidate.Bounds}, интервал 80 мс.");
-                await ClickAsync(candidate.Bounds, token, doubleClick: true);
+                ScenarioExecution.Log($"ReadCode: двойной клик по подтверждённому модулю «{candidate.Text}», свежая строка {selected.Bounds}, интервал 80 мс.");
+                await ClickAsync(selected.Bounds, readinessToken, doubleClick: true);
                 _module = candidate.Text;
-                _selectedModule = true;
                 string? lastConfirmation = null;
                 var opened = await WaitAsync(v =>
                 {
@@ -220,7 +235,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                     }
                     return OneCConfiguratorRecognizer.ConfirmsModuleOpening(beforeOpening, v, candidate.Text);
                 },
-                    "редактор общего модуля", token);
+                    "редактор общего модуля", readinessToken, timeoutSeconds: Math.Min(30, options.ReadyTimeoutSeconds));
                 _openedByAppearance = !OneCConfiguratorRecognizer.MatchesModuleName(opened.ModuleName, candidate.Text);
                 _confirmedEditor = opened.Editor;
                 if (_openedByAppearance)
@@ -249,6 +264,101 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
         throw new TimeoutException("ReadCode: исчерпан лимит поиска общего модуля.");
     }
 
+    private async Task<(ConfiguratorView View, RecognizedText Selected)?> SelectModuleAsync(
+        RecognizedText candidate, CancellationToken token)
+    {
+        var target = candidate;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            ScenarioExecution.Log($"ReadCode: выделение «{candidate.Text}», попытка {attempt + 1}/3, строка {target.Bounds}.");
+            await ClickAsync(target.Bounds, token);
+            await Task.Delay(options.PollIntervalMs, token);
+            var view = await RequireConfiguratorAsync(token);
+            if (view.Tree != _tree)
+                throw new InvalidOperationException($"ReadCode: дерево изменилось при выделении модуля. Снимок: {_path}");
+            var rows = ModuleRows(view, TreeLabel(view, "Общие модули"));
+            using var image = new Bitmap(_path);
+            var selected = ReadCodeModulePrefixes.SelectedCandidate(image, rows, candidate.Text);
+            if (selected != null) return (view, selected);
+            var matches = rows.Where(r => OneCConfiguratorRecognizer.MatchesModuleName(r.Text, candidate.Text)).ToArray();
+            ScenarioExecution.Log($"ReadCode: выделена другая/нераспознанная строка «{ReadCodePrefixNavigation.SelectedRow(image, rows)?.Text ?? "?"}»; совпадений цели: {matches.Length}; снимок: {_path}");
+            if (matches.Length != 1) break;
+            // Scrolling/selection can finish after the previous screenshot.
+            // Retry only a uniquely re-observed identity, never old coordinates.
+            target = matches[0];
+        }
+        return null;
+    }
+
+    private async Task<string?> TryJumpToRandomPrefixAsync(ConfiguratorView view, RecognizedText? parent,
+        CancellationToken token)
+    {
+        if (_prefixes.Length == 0)
+        {
+            ScenarioExecution.Log("ReadCode: словарь двухбуквенных префиксов пуст или недоступен; используем прокрутку.");
+            return null;
+        }
+        if (view.Tree != _tree) return null;
+        // CRM rows are valid focus anchors, but remain excluded from opening.
+        var rows = ModuleRows(view, parent).Where(r => ReadCodeModulePrefixes.IsNavigationRow(r.Text)).ToArray();
+        // Leave one visible row below for the Down/Up focus challenge.
+        if (rows.Length < 2)
+        {
+            ScenarioExecution.Log($"ReadCode: для проверки фокуса нужно две строки модулей, распознано {rows.Length}; используем прокрутку.");
+            return null;
+        }
+        var focus = rows[rows.Length / 2 - 1];
+        await ClickAsync(focus.Bounds, token);
+        await Task.Delay(options.PollIntervalMs, token);
+        var prefix = _prefixes[Random.Shared.Next(_prefixes.Length)];
+        if (!await ReadCodePrefixNavigation.TryJumpAsync(prefix, CaptureTreeFocusAsync,
+                keyboard.SendKeyAsync, async (text, ct) =>
+                {
+                    // Recheck pixels immediately before text input, without a slow OCR pass.
+                    VerifyObservedGeometry();
+                    RdpController.EnsureSessionForeground(_handle);
+                    var path = screenshots.CaptureClientArea(_handle, _directory);
+                    using var image = new Bitmap(path);
+                    if (_lastFocus == null || ReadCodePrefixNavigation.OutsideTreeHash(image, _tree!.Value) != _lastFocus.OutsideTreeHash ||
+                        ReadCodePrefixNavigation.SelectedRow(image, _lastFocusRows)?.Text != _lastFocus.SelectedModule)
+                        return false;
+                    VerifyObservedGeometry();
+                    await keyboard.SendTextWithoutPausesAsync(text, ct);
+                    return true;
+                }, token))
+        {
+            ScenarioExecution.Log("ReadCode: фокус дерева не подтверждён; используем OCR/прокрутку.");
+            return null;
+        }
+        await Task.Delay(options.PollIntervalMs, token);
+        var after = await CaptureTreeFocusAsync(token);
+        if (!after.IsSafe || !after.SelectedModule!.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            ScenarioExecution.Log($"ReadCode: переход по префиксу «{prefix}» не подтверждён; используем OCR/прокрутку.");
+            return null;
+        }
+        ScenarioExecution.Log($"ReadCode: подтверждён переход по случайному префиксу «{prefix}».");
+        return prefix;
+    }
+
+    private static bool HasVisibleEditor(ConfiguratorView view) => view.Editor != null || view.ModuleName != null ||
+        OneCConfiguratorRecognizer.HasRoutineSyntax(view) || view.Labels.Any(l =>
+            OneCConfiguratorRecognizer.ParseModuleTitle(l.Text) != null ||
+            (l.Bounds.Left > (view.Tree?.Right ?? 0) && System.Text.RegularExpressions.Regex.IsMatch(l.Text.Trim(),
+                @"^(?:Процедура|Функция|Procedure|Function)\s+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)));
+
+    private async Task<TreeFocusSnapshot> CaptureTreeFocusAsync(CancellationToken token)
+    {
+        var view = await RequireConfiguratorAsync(token);
+        var tree = view.Tree ?? Rectangle.Empty;
+        _lastFocusRows = tree == _tree ? ModuleRows(view, TreeLabel(view, "Общие модули")) : [];
+        using var image = new Bitmap(_path);
+        _lastFocus = new(view.IsConfigurator, HasVisibleEditor(view), tree, _observedClientBounds,
+            ReadCodePrefixNavigation.SelectedRow(image, _lastFocusRows)?.Text,
+            ReadCodePrefixNavigation.OutsideTreeHash(image, tree));
+        return _lastFocus;
+    }
+
     public async Task<bool> CanReadModuleAsync(CancellationToken token)
     {
         using var guard = RdpInputGuard.RequireStrict(_handle);
@@ -261,7 +371,9 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
     public async Task ReadModuleAsync(TimeSpan duration, CancellationToken token)
     {
         using var guard = RdpInputGuard.RequireStrict(_handle);
-        using var deadline = new CancellationTokenSource(duration);
+        // Test mode completes one whole pass; a short demo duration must not cancel OCR/readiness.
+        using var deadline = new CancellationTokenSource(options.FastTest
+            ? TimeSpan.FromSeconds(options.ReadyTimeoutSeconds) : duration);
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(token, deadline.Token);
         var ct = budget.Token;
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -300,7 +412,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                     view = await RequireEditorAsync(ct);
                     editor = view.Editor!.Value;
                 }
-                for (var movement = 0; seekingDown == null && movement < 3; movement++)
+                for (var movement = 0; !options.FastTest && seekingDown == null && movement < 3; movement++)
                 {
                     await MoveAsync(new Point(editor.Left + editor.Width * Random.Shared.Next(15, 65) / 100,
                         editor.Top + editor.Height * Random.Shared.Next(15, 80) / 100), ct);
@@ -327,10 +439,17 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
                     if (seekingDown != null) seekingDown = !down;
                     ScenarioExecution.Log($"ReadCode: изображение кода не изменилось; достигнута {(down ? "нижняя" : "верхняя")} граница, следующая прокрутка {(down ? "вверх" : "вниз")}.");
                 }
+                if (options.FastTest)
+                {
+                    await RequireEditorAsync(ct);
+                    ScenarioExecution.Log("ReadCode: тестовый проход чтения и проверка редактора после прокрутки завершены.");
+                    return;
+                }
             }
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested && !token.IsCancellationRequested)
         {
+            if (options.FastTest) throw new TimeoutException("ReadCode: истёк тайм-аут тестового прохода чтения.");
             // The reading deadline completes the step normally.
         }
         token.ThrowIfCancellationRequested();
@@ -398,15 +517,46 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
     {
         token.ThrowIfCancellationRequested();
         RdpController.EnsureSessionForeground(_handle);
+        _observedClientBounds = WindowScreenshotService.GetClientScreenBounds(_handle);
+        if (_confirmedEditor is Rectangle code && _tree is Rectangle dock && NativeMethods.GetCursorPos(out var pointer) &&
+            code.Contains(pointer.X - _observedClientBounds.Left, pointer.Y - _observedClientBounds.Top))
+        {
+            // Hovering a folded procedure opens a source-preview tooltip over
+            // the editor. Dismiss it without Escape (which can close a tab).
+            await MoveAsync(new Point(dock.Left + 5, dock.Top + 8), token);
+            await Task.Delay(300, token);
+        }
         _path = screenshots.CaptureClientArea(_handle, _directory);
         var labels = _confirmedEditor == null
             ? await ocr.ReadConfiguratorLinesAsync(_path, token)
             : await ocr.ReadLinesAsync(_path, token);
         RdpController.EnsureSessionForeground(_handle);
+        VerifyObservedGeometry();
         using var image = new Bitmap(_path);
         if (_size != Size.Empty && image.Size != _size) throw new InvalidOperationException("ReadCode: размер RDP изменился.");
         _size = image.Size;
         var view = OneCConfiguratorRecognizer.Analyze(image, labels);
+        if (_confirmedEditor != null && (view.Editor == null || !EditorIdentityConfirmed(view)))
+        {
+            ScenarioExecution.Log("ReadCode: быстрый OCR потерял редактор; повторяем распознавание с увеличением.");
+            labels = await ocr.ReadConfiguratorLinesAsync(_path, token);
+            view = OneCConfiguratorRecognizer.Analyze(image, labels);
+        }
+        if (view.IsConfigurator && view.Tree == null && _tree is Rectangle cached &&
+            OneCConfiguratorRecognizer.HasTreeDockPixels(image, cached))
+        {
+            ScenarioExecution.Log("ReadCode: OCR пропустил заголовок дерева; границы подтверждены по сохранённому разделителю и белому фону.");
+            view = view with { Tree = cached };
+        }
+        if (_tree is Rectangle known && view.Tree is Rectangle detected &&
+            OneCConfiguratorRecognizer.SameTreeDock(known, detected))
+        {
+            var stable = Rectangle.Union(known, detected);
+            if (stable != known)
+                ScenarioExecution.Log($"ReadCode: уточнена верхняя граница дерева {known} → {stable}; боковые и нижняя границы неизменны.");
+            _tree = stable;
+            view = view with { Tree = stable };
+        }
         view = RestoreConfirmedEditor(image, view);
         if (_confirmedEditor == null && view.Tree is { } tree)
         {
@@ -415,6 +565,7 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
             // skew correction can move their rows and create false duplicates.
             view = view with { Labels = labels.Where(l => !tree.IntersectsWith(l.Bounds)).Concat(treeLabels).ToArray() };
         }
+        VerifyObservedGeometry();
         return view;
     }
 
@@ -430,6 +581,8 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
     {
         var view = await CaptureAsync(token);
         if (!view.IsConfigurator) throw new InvalidOperationException("ReadCode: активный конфигуратор не подтверждён; ввод остановлен.");
+        if (OneCConfiguratorRecognizer.HasRepositoryConnectionDialog(view.Labels))
+            throw new InvalidOperationException($"ReadCode: конфигуратор заблокирован подключением к хранилищу; ввод остановлен. Снимок: {_path}");
         return view;
     }
 
@@ -473,16 +626,16 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
         _module != null && OneCConfiguratorRecognizer.MatchesModuleName(name, _module);
 
     private async Task<ConfiguratorView> WaitAsync(Func<ConfiguratorView, bool> condition, string what,
-        CancellationToken token, bool requireConfigurator = true)
+        CancellationToken token, bool requireConfigurator = true, int? timeoutSeconds = null)
     {
         var timer = Stopwatch.StartNew();
-        while (timer.Elapsed < TimeSpan.FromSeconds(options.ReadyTimeoutSeconds))
+        while (timer.Elapsed < TimeSpan.FromSeconds(timeoutSeconds ?? options.ReadyTimeoutSeconds))
         {
             var view = await CaptureAsync(token);
             if ((!requireConfigurator || view.IsConfigurator) && condition(view)) return view;
             await Task.Delay(options.PollIntervalMs, token);
         }
-        throw new TimeoutException($"ReadCode: не дождались: {what}.");
+        throw new TimeoutException($"ReadCode: не дождались: {what}. Снимок: {_path}");
     }
 
     private RecognizedText? TreeLabel(ConfiguratorView view, string text) =>
@@ -504,8 +657,14 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
     {
         await MoveAsync(new Point(target.Left + target.Width / 2, target.Top + target.Height / 2), token);
         token.ThrowIfCancellationRequested();
+        VerifyObservedGeometry();
         mouse.ClickLeft();
-        if (doubleClick) { await Task.Delay(80, token); mouse.ClickLeft(); }
+        if (doubleClick)
+        {
+            await Task.Delay(80, token);
+            VerifyObservedGeometry();
+            mouse.ClickLeft();
+        }
     }
 
     private async Task MoveAsync(Point point, CancellationToken token)
@@ -513,7 +672,15 @@ public sealed class ReadCodeUi(RdpController rdp, KeyboardInputSender keyboard, 
         token.ThrowIfCancellationRequested();
         if (!new Rectangle(Point.Empty, _size).Contains(point)) throw new InvalidOperationException("ReadCode: точка вне снимка RDP.");
         RdpController.EnsureSessionForeground(_handle);
+        VerifyObservedGeometry();
         await mouse.MoveToAsync(screenshots.ClientToScreen(_handle, point), token);
+        VerifyObservedGeometry();
+    }
+
+    private void VerifyObservedGeometry()
+    {
+        if (_observedClientBounds != WindowScreenshotService.GetClientScreenBounds(_handle))
+            throw new InvalidOperationException("ReadCode: положение или размер RDP изменились после распознавания.");
     }
 
     private static Rectangle Inset(Rectangle bounds) => new(bounds.Left + 40, bounds.Top + 8, 10, 10);

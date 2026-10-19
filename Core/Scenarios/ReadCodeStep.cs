@@ -39,7 +39,8 @@ public sealed class ReadCodeStep(ScenarioStepDefinition definition, IReadCodeUi 
                     continue;
                 }
                 cancellationToken.ThrowIfCancellationRequested();
-                ScenarioExecution.Log($"ReadCode: визуальное чтение {name}, {definition.ReadDurationSeconds} с.");
+                ScenarioExecution.Log(definition.FastTest ? $"ReadCode: тестовый проход чтения {name}." :
+                    $"ReadCode: визуальное чтение {name}, {definition.ReadDurationSeconds} с.");
                 await ui.ReadModuleAsync(TimeSpan.FromSeconds(definition.ReadDurationSeconds), cancellationToken);
                 ScenarioExecution.Log($"ReadCode: чтение {name} завершено.");
                 await ui.CloseModuleAsync(cancellationToken);

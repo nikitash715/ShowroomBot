@@ -12,6 +12,7 @@
 /config.yaml
 /Scenarios/*.yaml
 /Scenarios/*.yml
+!/Scenarios/Scenario3.yaml
 # Screenshots and OCR output may contain application data.
 diagnostics/
 
@@ -489,3 +490,8 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Local verification builds and reports
+/.test-artifacts/
+/.check-build/
+/.*check-results.txt

@@ -9,23 +9,36 @@ public sealed class RdpController(string defaultHost = "")
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<IntPtr, Rectangle> StableClientBounds = new();
     public static void MinimizeForLocalStep()
     {
-        ScenarioExecution.Perform(() =>
+        ScenarioExecution.Perform(MinimizeSessionWindows);
+    }
+
+    // Cleanup must still run after the scenario token has been cancelled.
+    public static void MinimizeAfterScenario() => MinimizeSessionWindows();
+
+    private static void MinimizeSessionWindows()
+    {
+        var windows = new List<IntPtr>();
+        if (!NativeMethods.EnumWindows((handle, _) =>
         {
-            // Enumerate actual local RDP windows, independent of host/title and connection state.
-            if (!NativeMethods.EnumWindows((handle, _) =>
+            var className = new System.Text.StringBuilder(256);
+            NativeMethods.GetClassName(handle, className, className.Capacity);
+            if (className.ToString() == "TscShellContainerClass" && NativeMethods.IsWindowVisible(handle))
             {
-                var className = new System.Text.StringBuilder(256);
-                NativeMethods.GetClassName(handle, className, className.Capacity);
-                if (className.ToString() == "TscShellContainerClass" && NativeMethods.IsWindowVisible(handle))
-                    NativeMethods.ShowWindow(handle, 6); // SW_MINIMIZE; does not disconnect the session.
-                return true;
-            }, IntPtr.Zero))
-                throw new InvalidOperationException("Не удалось свернуть окна RDP перед локальным шагом.");
-            var foregroundClass = new System.Text.StringBuilder(256);
-            NativeMethods.GetClassName(NativeMethods.GetForegroundWindow(), foregroundClass, foregroundClass.Capacity);
-            if (foregroundClass.ToString() == "TscShellContainerClass")
-                throw new InvalidOperationException("RDP остался на переднем плане перед локальным шагом.");
-        });
+                windows.Add(handle);
+                NativeMethods.ShowWindowAsync(handle, 6); // SW_MINIMIZE, keep session connected.
+            }
+            return true;
+        }, IntPtr.Zero)) throw new InvalidOperationException("Не удалось перечислить окна RDP для сворачивания.");
+        var timer = Stopwatch.StartNew();
+        while (timer.Elapsed < TimeSpan.FromSeconds(2))
+        {
+            if (windows.All(NativeMethods.IsIconic)) return;
+            if (timer.ElapsedMilliseconds > 500)
+                foreach (var handle in windows.Where(h => !NativeMethods.IsIconic(h)))
+                    NativeMethods.ShowWindowAsync(handle, 11); // SW_FORCEMINIMIZE if another thread is slow.
+            Thread.Sleep(50);
+        }
+        throw new InvalidOperationException("RDP не подтвердил сворачивание за 2 секунды.");
     }
 
     public async Task<IntPtr> OpenOrActivateAsync(CancellationToken cancellationToken = default)

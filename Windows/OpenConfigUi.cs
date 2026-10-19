@@ -31,12 +31,16 @@ public sealed class OpenConfigUi(RdpController rdp, KeyboardInputSender keyboard
         return view;
     }
 
-    public async Task<bool> IsConfiguratorAsync(CancellationToken token) => (await CaptureAsync(token)).IsConfigurator;
+    public async Task<bool> IsConfiguratorAsync(CancellationToken token)
+    {
+        var view = await CaptureAsync(token);
+        return view.IsConfigurator;
+    }
 
-    public async Task SelectWindowAsync(int index, CancellationToken token)
+    public async Task SelectNextWindowAsync(CancellationToken token)
     {
         using var guard = RdpInputGuard.RequireStrict(_handle);
-        await keyboard.SelectRemoteWindowAltTabAsync(index, token);
+        await keyboard.SelectNextRemoteWindowAsync(token);
         await Task.Delay(options.WindowSwitchDelayMs, token);
     }
 
@@ -54,7 +58,11 @@ public sealed class OpenConfigUi(RdpController rdp, KeyboardInputSender keyboard
         keyboard.SendEnter();
     }
 
-    public Task WaitReadyAsync(CancellationToken token) => WaitAsync(v => v.IsConfigurator, "запуск конфигуратора", token);
+    public async Task WaitReadyAsync(CancellationToken token)
+    {
+        await WaitAsync(OneCConfiguratorRecognizer.IsReadyForMetadata,
+            "дерево конфигурации без блокирующего диалога", token);
+    }
 
     private async Task WaitAsync(Func<ConfiguratorView, bool> condition, string what, CancellationToken token)
     {
@@ -63,7 +71,10 @@ public sealed class OpenConfigUi(RdpController rdp, KeyboardInputSender keyboard
         while (timer.Elapsed < timeout)
         {
             token.ThrowIfCancellationRequested();
-            if (condition(await CaptureAsync(token))) return;
+            var view = await CaptureAsync(token);
+            if (OneCConfiguratorRecognizer.HasRepositoryConnectionDialog(view.Labels))
+                throw new InvalidOperationException("OpenConfig: конфигуратор заблокирован диалогом подключения к хранилищу. Дерево ещё не готово; ввод остановлен.");
+            if (condition(view)) return;
             var remaining = timeout - timer.Elapsed;
             if (remaining > TimeSpan.Zero)
                 await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(options.PollIntervalMs, remaining.TotalMilliseconds)), token);

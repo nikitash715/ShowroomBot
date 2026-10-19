@@ -4,7 +4,12 @@ using ShowroomBot.Configuration;
 
 namespace ShowroomBot.Core.Scenarios;
 
-public sealed class ScenarioStepFactory
+public interface IScenarioStepFactory
+{
+    IScenarioStep Create(ScenarioStepDefinition definition);
+}
+
+public sealed class ScenarioStepFactory : IScenarioStepFactory
 {
     // Type and context live in one registry; YAML never selects the execution environment.
     private sealed record Registration(ScenarioExecutionContext Context,
@@ -57,7 +62,10 @@ public sealed class ScenarioStepFactory
 
     private ReadCodeStep CreateReadCode(ScenarioStepDefinition definition) =>
         new(definition, new ReadCodeUi(_rdpController, _keyboardInputSender,
-            _mouseInputSender, _screenshots, _sectionRecognizer, definition));
+            definition.FastTest ? new MouseInputSender(new MouseSettings
+            {
+                MovementDurationMilliseconds = 50, StepDelayMilliseconds = 10, DurationVariation = 0
+            }) : _mouseInputSender, _screenshots, _sectionRecognizer, definition));
     public static ScenarioExecutionContext GetExecutionContext(string type) => GetRegistration(type).Context;
 
     private static Registration GetRegistration(string type) =>

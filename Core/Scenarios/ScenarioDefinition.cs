@@ -65,6 +65,7 @@ public sealed class ScenarioStepDefinition
     // Legacy YAML option; visual reading does not count source lines.
     public int MinimumCodeLines { get; set; } = 10;
     public int ReadLinePauseMs { get; set; } = 900;
+    public bool FastTest { get; set; }
 }
 
 public sealed record ScenarioDescriptor(

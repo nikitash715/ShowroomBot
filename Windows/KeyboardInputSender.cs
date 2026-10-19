@@ -29,17 +29,21 @@ public sealed class KeyboardInputSender
         CreateVirtualKeyInput(0x03, false), CreateVirtualKeyInput(0x03, true), // Ctrl+Alt+Break
         CreateVirtualKeyInput(0x12, true), CreateVirtualKeyInput(0x11, true));
 
-    public async Task SelectRemoteWindowAltTabAsync(int index, CancellationToken token)
+    public async Task SelectNextRemoteWindowAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         SendInputs(CreateVirtualKeyInput(0x12, false));
         try
         {
             await Task.Delay(100, token);
-            // Selecting successive MRU indices visits all windows instead of toggling two.
-            for (var i = 0; i < index; i++) await SendKeyAsync(0x09, token);
+            SendInputs(CreateVirtualKeyInput(0x10, false)); // Reverse MRU order.
+            await Task.Delay(80, token);
+            await SendKeyAsync(0x09, token);
         }
-        finally { SendInputsCore([CreateVirtualKeyInput(0x12, true)]); }
+        finally
+        {
+            SendInputsCore([CreateVirtualKeyInput(0x10, true), CreateVirtualKeyInput(0x12, true)]);
+        }
     }
 
     public void SelectCurrentLine() => SendInputs(CreateVirtualKeyInput(0x10, false),
@@ -51,6 +55,7 @@ public sealed class KeyboardInputSender
             CreateVirtualKeyInput(VirtualKeyEnter, keyUp: false),
             CreateVirtualKeyInput(VirtualKeyEnter, keyUp: true));
     }
+
 
     public void SendKey(ushort virtualKey) => SendInputs(
         CreateVirtualKeyInput(virtualKey, false), CreateVirtualKeyInput(virtualKey, true));
@@ -135,25 +140,6 @@ public sealed class KeyboardInputSender
         await Task.Delay(150, token);
     }
 
-    // RDP's Alt+PageUp switches remote windows even in windowed mode.
-    // Hold Alt across all presses to select an MRU index instead of toggling two windows.
-    public void SelectRemoteWindow(int index)
-    {
-        const ushort alt = 0x12;
-        const ushort pageUp = 0x21;
-        SendInputs(CreateVirtualKeyInput(alt, false));
-        try
-        {
-            for (var i = 0; i < index; i++)
-                SendInputs(CreateVirtualKeyInput(pageUp, false), CreateVirtualKeyInput(pageUp, true));
-        }
-        finally
-        {
-            // Release our held modifier even when cancellation has blocked all further input.
-            SendInputsCore([CreateVirtualKeyInput(alt, true)]);
-        }
-    }
-
     private readonly TypingSettings _typing;
     private readonly TypingTempo _tempo;
     public KeyboardInputSender(TypingSettings? settings = null)
@@ -195,6 +181,7 @@ public sealed class KeyboardInputSender
         // can arrive as the numeric keypad's 7/1 instead of navigation.
         ushort scanCode = virtualKey switch
         {
+            0x09 => 0x0F, // Tab
             0x21 => 0x49, // PageUp (RDP Alt+PageUp)
             0x25 => 0x4B, // Left (ReadCode tree/editor navigation)
             0x26 => 0x48, // Up

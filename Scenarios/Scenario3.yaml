@@ -1,0 +1,34 @@
+name: "Тест"
+steps:
+  - type: Open1C
+    executable: 'C:\Program Files\1cv8\common\1cestart.exe'
+    server: '10.40.11.50'
+    database: 'dev_erp_sakharov'
+    user: 'Сахаров Никита Борисович'
+    password: '0304'
+    panelColor: '#C0DCC0'
+    maxWindowsToCheck: 10 # Максимальное число удалённых окон для поиска открытой базы; затем запускается новая.
+
+  - type: ExecuteToolkitQuery
+    queryFile: 'Queries1c/ПланированиеМатериалов.txt'
+    queryInputMode: paste
+    scrollSpeed: 10
+
+  - type: OpenConfig # Найти конфигуратор через Alt+Tab в полноэкранном RDP; иначе запустить CONFIG.
+    executable: 'C:\Program Files\1cv8\common\1cestart.exe'
+    server: '10.40.11.50'
+    database: 'dev_erp_sakharov'
+    user: 'Сахаров Никита Борисович'
+    password: '0304'
+    maxWindowsToCheck: 15 # Жёсткий предел поиска — 15 окон.
+    windowSwitchDelayMs: 700
+    afterActivationDelayMs: 1000
+    afterRunDialogDelayMs: 500
+    readyTimeoutSeconds: 420
+    pollIntervalMs: 500
+
+  - type: ReadCode
+    ReadModuleCount: 3
+    fastTest: true
+
+ 

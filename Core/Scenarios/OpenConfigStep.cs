@@ -4,7 +4,7 @@ public interface IOpenConfigUi
 {
     Task PrepareAsync(CancellationToken token);
     Task<bool> IsConfiguratorAsync(CancellationToken token);
-    Task SelectWindowAsync(int index, CancellationToken token);
+    Task SelectNextWindowAsync(CancellationToken token);
     Task LaunchAsync(ScenarioStepDefinition definition, CancellationToken token);
     Task WaitReadyAsync(CancellationToken token);
 }
@@ -18,18 +18,17 @@ public sealed class OpenConfigStep(ScenarioStepDefinition definition, IOpenConfi
         cancellationToken.ThrowIfCancellationRequested();
         Validate(definition);
         await ui.PrepareAsync(cancellationToken);
-        var limit = Math.Min(15, definition.MaxWindowsToCheck);
-        for (var index = 0; index < limit; index++)
+        var limit = definition.MaxWindowsToCheck;
+        var found = await RemoteWindowSearch.FindAsync(limit, ui.SelectNextWindowAsync, async (index, token) =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (index > 0) await ui.SelectWindowAsync(index, cancellationToken);
-            ScenarioExecution.Log($"OpenConfig: проверяем окно {index + 1}/{limit} через Alt+Tab.");
-            if (await ui.IsConfiguratorAsync(cancellationToken))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                ScenarioExecution.Log("OpenConfig: найден открытый конфигуратор в RDP.");
-                return;
-            }
+            ScenarioExecution.Log($"OpenConfig: проверяем окно {index + 1}/{limit} через обратный Alt+Tab.");
+            return await ui.IsConfiguratorAsync(token);
+        }, cancellationToken);
+        if (found)
+        {
+            await ui.WaitReadyAsync(cancellationToken);
+            ScenarioExecution.Log("OpenConfig: найден открытый конфигуратор в RDP.");
+            return;
         }
         cancellationToken.ThrowIfCancellationRequested();
         ScenarioExecution.Log($"OpenConfig: проверено {limit} окон; запускаем конфигуратор командой CONFIG.");

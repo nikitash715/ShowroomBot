@@ -47,6 +47,30 @@ public sealed class MainForm : Form
     private bool _isTestScenarioRunning;
     private CancellationTokenSource? _scenarioCancellation;
     private EmergencyStopHotkey? _emergencyStop;
+    private bool _commandLineRun;
+    private bool _seriesStopRequested;
+
+    public void SelectScenario(ScenarioDescriptor scenario) => _scenarioComboBox.SelectedItem = scenario;
+
+    public async Task<int> RunFromCommandLineAsync(int count = 1, bool keepOpen = false,
+        Func<int, int, Task>? afterRun = null)
+    {
+        _commandLineRun = true;
+        _seriesStopRequested = false;
+        try
+        {
+            var result = 0;
+            for (var index = 0; index < count; index++)
+            {
+                var code = await StartDemoAsync();
+                if (afterRun is not null) await afterRun(index, code);
+                if (code != 0) result = code;
+                if (code == 2 || (keepOpen && code == 1) || _seriesStopRequested || _isExiting || IsDisposed) break;
+            }
+            return result;
+        }
+        finally { if (!keepOpen) ExitApplication(); }
+    }
 
     public MainForm(
         SettingsService settingsService,
@@ -183,6 +207,7 @@ public sealed class MainForm : Form
         if (!_isExiting && e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;
+            if (_commandLineRun) { StopDemo(); return; }
             Hide();
             return;
         }
@@ -418,7 +443,7 @@ public sealed class MainForm : Form
 
         UpdateView();
 
-        if (!_isExiting && !IsDisposed && !_isCheckingInfrastructure &&
+        if (!_commandLineRun && !_isExiting && !IsDisposed && !_isCheckingInfrastructure &&
             _scenarioComboBox.SelectedItem is ScenarioDescriptor selectedScenario &&
             _autoStartTimer.ShouldStart(
                 _settings.AutoStartDemo,
@@ -511,7 +536,7 @@ public sealed class MainForm : Form
                 $"время {_settings.AutoStartStartTime}–{_settings.AutoStartEndTime} (местное время компьютера).";
         }, cancellationToken);
 
-    private async Task StartDemoAsync(bool automatic = false)
+    private async Task<int> StartDemoAsync(bool automatic = false)
     {
         if (_scenarioComboBox.SelectedItem is not ScenarioDescriptor scenario)
         {
@@ -521,12 +546,12 @@ public sealed class MainForm : Form
                 "ShowroomBot",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
-            return;
+            return 1;
         }
 
         if (_isTestScenarioRunning)
         {
-            return;
+            return 1;
         }
 
         _statusRefresh.Reset();
@@ -543,20 +568,23 @@ public sealed class MainForm : Form
                 "ShowroomBot",
                 $"Сценарий завершён: {scenario.Name}",
                 ToolTipIcon.Info);
+            return 0;
         }
         catch (OperationCanceledException)
         {
             _demoController.StopDemo();
+            return 2;
         }
         catch (Exception exception)
         {
-            MessageBox.Show(
+            if (!_commandLineRun) MessageBox.Show(
                 this,
                 exception.Message,
                 "Ошибка сценария",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
             _demoController.StopDemo();
+            return 1;
         }
         finally
         {
@@ -570,6 +598,7 @@ public sealed class MainForm : Form
 
     private void StopDemo()
     {
+        _seriesStopRequested = true;
         ScenarioExecution.CancelCurrent();
         _scenarioCancellation?.Cancel();
         _demoController.StopDemo();
@@ -599,6 +628,7 @@ public sealed class MainForm : Form
 
     private void ExitApplication()
     {
+        if (_commandLineRun && _isTestScenarioRunning) { StopDemo(); return; }
         _isExiting = true;
         _notifyIcon.Visible = false;
         Close();

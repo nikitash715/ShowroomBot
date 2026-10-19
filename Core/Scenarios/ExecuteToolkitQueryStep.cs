@@ -16,6 +16,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
 
     public async Task ExecuteAsync(CancellationToken cancellationToken = default)
     {
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
         // Validate the file before activating RDP or sending any native input.
         var query = await ReadQueryAsync(cancellationToken);
         Validate();
@@ -54,10 +55,12 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
             token.ThrowIfCancellationRequested();
             await Task.Delay(200, token);
             ScenarioExecution.Log($"Toolkit: ввод файла {definition.QueryFile}; режим {definition.QueryInputMode}; редактор {layout.Editor}.");
+            var inputElapsed = System.Diagnostics.Stopwatch.StartNew();
             if (string.Equals(definition.QueryInputMode, "paste", StringComparison.OrdinalIgnoreCase))
                 await new RdpClipboardQueryInput(keyboard).ReplaceAndVerifyAsync(query, definition.QueryInputTimeoutSeconds, token);
             else
                 await new RdpKeyboardQueryInput(keyboard).ReplaceAsync(query, definition.QueryInputTimeoutSeconds, token);
+            ScenarioExecution.Log($"Toolkit: ввод и проверка заняли {inputElapsed.Elapsed.TotalSeconds:F2} с.");
             ToolkitConsoleLayout result;
             try
             {
@@ -95,6 +98,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
             ScenarioExecution.Log($"Toolkit: {exception.Message}; диагностика: {_directory}");
             throw new InvalidOperationException($"{exception.Message} Диагностика: {_directory}", exception);
         }
+        finally { ScenarioExecution.Log($"Toolkit: полное время шага {elapsed.Elapsed.TotalSeconds:F2} с."); }
     }
 
     private sealed class ToolkitQueryExecutionException(string message) : InvalidOperationException(message);
@@ -166,11 +170,13 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(definition.QueryTimeoutSeconds));
         var progress = new ToolkitExecutionProgress(before, baseline, definition.ResultStablePolls);
+        ToolkitConsoleLayout? last = null;
         try
         {
             while (true)
             {
                 var (path, layout) = await Observe(timeout.Token);
+                last = layout;
                 var fingerprint = layout.Result is Rectangle area ? ToolkitConsoleRecognizer.Fingerprint(path, area) : null;
                 if (progress.Observe(layout, fingerprint)) return layout;
                 if (progress.HasConfirmedError)
@@ -179,7 +185,11 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
             }
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
-        { throw new TimeoutException("Toolkit: не подтверждено завершение нового запроса. Прежний результат без изменения или признака выполнения не принимается; проверьте сообщения 1С."); }
+        {
+            if (last is { Result: not null, RowCount: null })
+                throw new TimeoutException("Toolkit: таблица результата найдена, но число строк не распознано; завершение запроса не подтверждено.");
+            throw new TimeoutException("Toolkit: не подтверждено завершение нового запроса. Прежний результат без изменения или признака выполнения не принимается; проверьте сообщения 1С.");
+        }
     }
 
     private async Task ScrollResult(ToolkitConsoleLayout layout, CancellationToken token)
@@ -282,7 +292,7 @@ public sealed class ExecuteToolkitQueryStep(ScenarioStepDefinition definition, R
         VerifyObservedGeometry(Activate(token));
         ScenarioExecution.Log($"Toolkit: распознано: вкладка={layout.ConsoleTab}, текст={layout.TextTab}, " +
             $"редактор={layout.Editor}, выполнить={layout.Execute}, результат={layout.Result}, строки={layout.RowCount}, " +
-            $"busy={layout.Busy}, ошибка={layout.Error}; screenshot: {path}");
+            $"busy={layout.Busy}, время выполнения={layout.ExecutionStamp}, ошибка={layout.Error}; screenshot: {path}");
         return (path, layout);
     }
     private static Point Center(Rectangle region) => new(region.Left + region.Width / 2, region.Top + region.Height / 2);
